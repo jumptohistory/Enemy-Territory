@@ -455,6 +455,10 @@ typedef enum {
 	G_SENDMESSAGE,
 	G_MESSAGESTATUS,
 	// -zinx
+
+	// JH
+	G_FS_PAK_INFO_FOR_FILE,
+	// -JH
 } gameImport_t;
 
 

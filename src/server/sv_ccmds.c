@@ -93,12 +93,13 @@ Returns the player with idnum from Cmd_Argv(1)
 ==================
 */
 // fretn unused
-#if 0
+#if 1
 static client_t *SV_GetPlayerByNum( void ) {
 	client_t    *cl;
-	int i;
+	//int i;
 	int idnum;
 	char        *s;
+	char *ep;
 
 	// make sure server is running
 	if ( !com_sv_running->integer ) {
@@ -112,13 +113,11 @@ static client_t *SV_GetPlayerByNum( void ) {
 
 	s = Cmd_Argv( 1 );
 
-	for ( i = 0; s[i]; i++ ) {
-		if ( s[i] < '0' || s[i] > '9' ) {
-			Com_Printf( "Bad slot number: %s\n", s );
-			return NULL;
-		}
+	idnum = strtol( s, &ep, 10 );
+	if ( ep == s || *ep ) {
+		Com_Printf( "Bad slot number: %s\n", s );
+		return NULL;
 	}
-	idnum = atoi( s );
 	if ( idnum < 0 || idnum >= sv_maxclients->integer ) {
 		Com_Printf( "Bad client slot: %i\n", idnum );
 		return NULL;
@@ -306,6 +305,606 @@ static void SV_Map_f( void ) {
 	} else {
 		Cvar_Set( "sv_cheats", "0" );
 	}
+}
+
+static void SV_Putspec_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		return;
+	}
+
+	if ( cl->state == CS_ACTIVE || cl->state == CS_PRIMED ) {
+		Cmd_TokenizeString( "team s" );
+		VM_Call( gvm, GAME_CLIENT_COMMAND, cl - svs.clients );
+	}
+}
+
+static void SV_ClearVelocity_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	VectorClear( ps->velocity );
+}
+
+static void SV_GetVelocity_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	Cvar_Set( "returnvalue", va( "%f %f %f", ps->velocity[0], ps->velocity[1], ps->velocity[2] ) );
+}
+
+static void SV_SetVelocity_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	vec_t vel;
+	char *ep;
+	int i;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	for ( i = 0 ; i < 3 ; i++ ) {
+		char *argv = Cmd_Argv( i + 2 );
+
+		vel = strtod( argv, &ep );
+		if ( ep == argv || *ep ) {
+			Com_DPrintf( "unable to convert %s\n", ep );
+			continue;
+		}
+		ps->velocity[i] = vel;
+	}
+}
+
+static void SV_GetViewAngles_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	Cvar_Set( "returnvalue", va( "%f %f %f", ps->viewangles[0], ps->viewangles[1], ps->viewangles[2] ) );
+}
+
+static void SV_SetViewAngles_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	vec_t angle;
+	char *ep;
+	int i;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+
+	for ( i = 0 ; i < 3 ; i++ ) {
+		char *argv = Cmd_Argv( i + 2 );
+
+		angle = strtod( argv, &ep );
+		if ( ep == argv || *ep ) {
+			Com_DPrintf( "unable to convert %s\n", ep );
+			continue;
+		}
+		ps->viewangles[i] = angle;
+		ps->delta_angles[i] = ANGLE2SHORT( ps->viewangles[i] ) - cl->lastUsercmd.angles[i];
+	}
+}
+
+static void SV_GetPMFlagsAndTime_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	Cvar_Set( "returnvalue", va( "%d %d", ps->pm_flags, ps->pm_time ) );
+}
+
+static void SV_SetPMFlagsAndTime_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	ps->pm_flags = atoi( Cmd_Argv( 2 ) );
+	ps->pm_time = atoi( Cmd_Argv( 3 ) );
+}
+
+static void SV_RemoveVoteFlag_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	ps->eFlags &= ~EF_VOTED;
+}
+
+static void SV_RemoveVoteFlags_f( void ) {
+	int i;
+	for ( i = 0; i < sv_maxclients->integer; i++ ) {
+		if ( svs.clients[i].state >= CS_CONNECTED ) {
+			playerState_t *ps = SV_GameClientNum( i );
+			ps->eFlags &= ~EF_VOTED;
+		}
+	}
+}
+
+static void SV_ClearStatKey_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int statKey;
+
+	if ( !cl ) {
+		return;
+	}
+
+	statKey = atoi( Cmd_Argv( 2 ) );
+	ps = SV_GameClientNum( cl - svs.clients );
+	ps->stats[STAT_KEYS] &= ~( 1 << statKey );
+}
+
+static void SV_SetStatKey_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int statKey;
+
+	if ( !cl ) {
+		return;
+	}
+
+	statKey = atoi( Cmd_Argv( 2 ) );
+	ps = SV_GameClientNum( cl - svs.clients );
+	ps->stats[STAT_KEYS] |= 1 << statKey;
+}
+
+static void SV_GetClientName_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		return;
+	}
+
+	Cvar_Set( "returnvalue", cl->name );
+}
+
+static void SV_SetClientName_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		return;
+	}
+
+	Q_strncpyz( cl->name, Cmd_Argv( 2 ), sizeof( cl->name ) );
+}
+
+static void SV_WeaponCheck_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int weapon;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+
+	weapon = atoi( Cmd_Argv( 2 ) );
+	if ( COM_BitCheck( ps->weapons, weapon ) ) {
+		Cvar_Set( "returnvalue", "true" );
+	} else {
+		Cvar_Set( "returnvalue", "false" );
+	}
+}
+
+static void SV_WeaponSet_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int weapon;
+	char *ep;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );	
+	weapon = strtol( Cmd_Argv( 2 ), &ep, 10 );
+	if ( *ep || ep == Cmd_Argv( 2 ) ) {
+		Com_DPrintf( "unable to convert %s\n", ep );
+		return;
+	}
+	COM_BitSet( ps->weapons, weapon );
+}
+
+static void SV_WeaponRemove_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int weapon;
+	char *ep;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );		
+	weapon = strtol( Cmd_Argv( 2 ), &ep, 10 );
+	if ( *ep || ep == Cmd_Argv( 2 ) ) {
+		Com_DPrintf( "unable to convert %s\n", ep );
+		return;
+	}
+	COM_BitClear( ps->weapons, weapon );
+}
+
+static void SV_WeaponChange_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	int weapon;
+	char *ep;
+
+	if ( !cl ) {
+		return;
+	}
+
+	weapon = strtol( Cmd_Argv( 2 ), &ep, 10 );
+	if ( *ep || ep == Cmd_Argv( 2 ) ) {
+		Com_DPrintf( "unable to convert %s\n", ep );
+		return;
+	}
+
+	if ( weapon >= 0 && weapon < MAX_WEAPONS ) {
+		playerState_t *ps = SV_GameClientNum( cl - svs.clients );
+		
+		ps->weapon = weapon;
+	}
+}
+
+static void SV_WeaponLeave_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	weapon_t weapons[MAX_WEAPONS] = { WP_NONE };
+	int indexWeapons = 0;
+	int i;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+
+	for ( i = 0 ; i + 2 < Cmd_Argc() && i < MAX_WEAPONS ; i++ ) {
+		char *argv = Cmd_Argv( i + 2 );
+		char *ep;
+		int weapon = strtol( argv, &ep, 10 );
+
+		if ( ep == argv || *ep ) {
+			Com_DPrintf( "unable to convert %s\n", ep );
+			continue;
+		}
+
+		if ( COM_BitCheck( ps->weapons, weapon ) ) {
+			weapons[indexWeapons] = weapon;
+			indexWeapons++;
+		}
+	}
+
+	ps->weapons[0] = 0;
+	ps->weapons[1] = 0;
+
+	for ( i = 0 ; i < indexWeapons ; i++ ) {
+		COM_BitSet( ps->weapons, weapons[i] );
+	}
+
+	if ( !COM_BitCheck( ps->weapons, ps->weapon ) ) {
+		ps->weapon = weapons[0];
+	}
+}
+
+static void SV_GetWeaponState_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	Cvar_Set( "returnvalue", va( "%d", ps->weaponstate ) );
+}
+
+static void SV_SetWeaponState_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int weaponstate;
+
+	if ( !cl ) {
+		return;
+	}
+
+	weaponstate = atoi( Cmd_Argv( 2 ) );
+
+	ps = SV_GameClientNum( cl - svs.clients );
+		
+	ps->weaponstate = weaponstate;
+}
+
+static void SV_GetClassWeaponTime_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+
+	if ( !cl ) {
+		return;
+	}
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	Cvar_Set( "returnvalue", va( "%d", ps->classWeaponTime ) );
+}
+
+static void SV_SetClassWeaponTime_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	playerState_t *ps;
+	int classWeaponTime;
+
+	if ( !cl ) {
+		return;
+	}
+
+	classWeaponTime = atoi( Cmd_Argv( 2 ) );
+
+	ps = SV_GameClientNum( cl - svs.clients );
+	ps->classWeaponTime = classWeaponTime;
+}
+
+static void SV_GetLastActivityTime_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		return;
+	}
+
+	if ( Cmd_Argc() >= 3 ) {
+		char *type = Cmd_Argv( 2 );
+		int time = 0;
+
+		if ( Q_stricmp( type, "buttons" ) == 0 || Q_stricmp( type, "button" ) == 0 ) {
+			int flags;
+			char *ep;
+			int i;
+
+			flags = strtol( Cmd_Argv( 3 ), &ep, 0 );
+			if ( *ep || ep == Cmd_Argv( 3 ) ) {
+				return;
+			}
+
+			for ( i = 0 ; i < 8 ; i++ ) {
+				if ( flags & 1 << i && cl->lastUsercmdTimes.buttons[i] > time ) {
+					time = cl->lastUsercmdTimes.buttons[i];
+				}
+			}
+		} else if ( Q_stricmp( type, "wbuttons" ) == 0 || Q_stricmp( type, "wbutton" ) == 0 ) {
+			int flags;
+			char *ep;
+			int i;
+
+			flags = strtol( Cmd_Argv( 3 ), &ep, 0 );
+			if ( *ep || ep == Cmd_Argv( 3 ) ) {
+				return;
+			}
+
+			for ( i = 0 ; i < 8 ; i++ ) {
+				if ( flags & 1 << i && cl->lastUsercmdTimes.wbuttons[i] > time ) {
+					time = cl->lastUsercmdTimes.wbuttons[i];
+				}
+			}
+		} else if ( Q_stricmp( type, "forwardmove" ) == 0 ) {
+			time = cl->lastUsercmdTimes.forwardmove;
+		} else if ( Q_stricmp( type, "rightmove" ) == 0 ) {
+			time = cl->lastUsercmdTimes.rightmove;
+		} else if ( Q_stricmp( type, "upmove" ) == 0 ) {
+			time = cl->lastUsercmdTimes.upmove;
+		} else {
+			return;
+		}
+
+		Cvar_Set( "returnvalue", va( "%d", time ) );
+	} else {
+		Cvar_Set( "returnvalue", va( "%d", cl->lastActivityTime ) );
+	}
+}
+
+static void SV_ListMaps_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		return;
+	}
+	SV_ListMaps( cl );
+}
+
+static void SV_MapList_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		return;
+	}
+	SV_MapList( cl );
+}
+
+static void SV_FindMap_f( void ) {
+	if ( strcmp( Cmd_Argv( 1 ), "r" ) == 0 ) {
+		SV_FindMap( NULL, 2 );
+	} else {
+		SV_FindMap( SV_GetPlayerByNum(), 2 );
+	}
+}
+
+static void SV_SetFindMapTime_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	int time;
+	char *ep;
+
+	if ( !cl ) {
+		return;
+	}
+
+	time = strtol( Cmd_Argv( 2 ), &ep, 10 );
+	if ( *ep ) {
+		return;
+	} else if ( ep == Cmd_Argv( 2 ) ) {
+		time = -99999;
+	}
+	SV_SetFindMapTime( cl - svs.clients, time );
+}
+
+static void SV_CheckClientPak_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl || Cmd_Argc() < 3 ) {
+		return;
+	}
+
+	if ( FS_ClientHasPak( cl, Cmd_Argv( 2 ) ) ) {
+		Cvar_Set( "returnvalue", "true" );
+	} else {
+		Cvar_Set( "returnvalue", "false" );
+	}
+}
+
+static void SV_SendServerCommand_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+
+	if ( !cl ) {
+		if ( atoi( Cmd_Argv( 1 ) ) == -1 ) {
+			cl = NULL;
+		} else {
+			return;
+		}
+	}
+
+	SV_SendServerCommand( cl, "%s", Cmd_ArgsFrom( 2 ) );
+}
+
+static void SV_SetLevelTime_f( void ) {
+	char *argv1;
+	int time;
+	char *endptr;
+	const char *strUsage = "Usage: setleveltime <time>\n";
+
+#if 0
+	if ( !com_developer || !com_developer->integer ) {
+		return;
+	}
+#endif
+	if ( Cmd_Argc() != 2 ) {
+		Com_Printf( strUsage );
+		return;
+	}
+	argv1 = Cmd_Argv( 1 );
+	time = strtol( argv1, &endptr, 0 );
+	if ( endptr == argv1 || *endptr ) {
+		Com_Printf( strUsage );
+		return;
+	}
+	svs.time = time;
+	Com_Printf( "Set svs.time to 0x%08X.\n", time );
+}
+
+static void SV_ShowServerTime_f( void ) {
+	char *argv1 = Cmd_Argv( 1 );
+
+	if ( Q_stricmp( argv1, "lastPlayerLeftTime" ) == 0 ) {
+		Com_Printf( "svs.lastPlayerLeftTime:0x%08X\n", svs.lastPlayerLeftTime );
+	} else if ( Q_stricmp( argv1, "tempRestartTime" ) == 0 ) {
+		Com_Printf( "svs.tempRestartTime:0x%08X\n", svs.tempRestartTime );
+	} else {
+		Com_Printf( "svs.time:0x%08X\n", svs.time );
+	}
+	return;
+}
+
+static void SV_GetClState_f( void ) {
+	client_t *cl = SV_GetPlayerByNum();
+	if ( !cl ) {
+		return;
+	}
+
+	switch ( cl->state ) {
+		case CS_FREE:
+			Com_Printf( "CS_FREE\n" );
+			break;
+		case CS_ZOMBIE:
+			Com_Printf( "CS_ZOMBIE\n" );
+			break;
+		case CS_CONNECTED:
+			Com_Printf( "CS_CONNECTED\n" );
+			break;
+		case CS_PRIMED:
+			Com_Printf( "CS_PRIMED\n" );
+			break;
+		case CS_ACTIVE:
+			Com_Printf( "CS_ACTIVE\n" );
+			break;
+	}
+}
+
+void SV_Rcon_f( void ) {
+	char message[1024];
+	netadr_t to;
+
+	if ( !*rcon_client_password->string ) {
+		Com_Printf( "You must set 'rconPassword' before\n"
+					"issuing an rcon command.\n" );
+		return;
+	}
+
+	message[0] = -1;
+	message[1] = -1;
+	message[2] = -1;
+	message[3] = -1;
+	message[4] = 0;
+
+	strcat( message, "rcon " );
+
+	strcat( message, rcon_client_password->string );
+	strcat( message, " " );
+
+	// ATVI Wolfenstein Misc #284
+	strcat( message, Cmd_Cmd() + 5 );
+
+	if ( !strlen( rconAddress->string ) ) {
+		Com_Printf( "You must either be connected,\n"
+					"or set the 'rconAddress' cvar\n"
+					"to issue rcon commands\n" );
+
+		return;
+	}
+	NET_StringToAdr( rconAddress->string, &to );
+	if ( to.port == 0 ) {
+		to.port = BigShort( PORT_SERVER );
+	}
+
+	NET_SendPacket( NS_SERVER, strlen( message ) + 1, message, to );
 }
 
 /*
@@ -1061,8 +1660,40 @@ Examine or change the serverinfo string
 ===========
 */
 static void SV_Systeminfo_f( void ) {
+	char buf[BIG_INFO_STRING];
+
+	SV_GetConfigstring( CS_SYSTEMINFO, buf, sizeof( buf ) );
+
+	if ( Cmd_Argc() == 2 ) {
+		if ( Q_stricmpn( Cmd_Argv( 1 ), "len", 3 ) == 0 ) {
+			Com_Printf( "total length: %d\n", strlen( buf ) );
+			return;
+		} else {
+			char *info;
+
+			info = Info_ValueForKey( buf, Cmd_Argv( 1 ) );
+			if ( *info ) {
+				char *s = info;
+
+				while ( *s ) {
+					char text[1024];
+					int i;
+
+					for ( i = 0; *s && i < sizeof ( text ) - 1; i++, s++ ) {
+						text[i] = *s;
+					}
+					text[i] = 0;
+
+					Com_Printf( "%s", text );
+				}
+				Com_Printf( "\n" );
+			}
+			return;
+		}
+	}
+
 	Com_Printf( "System info settings:\n" );
-	Info_Print( Cvar_InfoString( CVAR_SERVERINFO | CVAR_SERVERINFO_NOUPDATE ) );
+	Info_Print( buf );
 }
 
 
@@ -1147,6 +1778,42 @@ void SV_AddOperatorCommands( void ) {
 	Cmd_AddCommand( "systeminfo", SV_Systeminfo_f );
 	Cmd_AddCommand( "dumpuser", SV_DumpUser_f );
 	Cmd_AddCommand( "map_restart", SV_MapRestart_f );
+	//
+	Cmd_AddCommand( "putspec", SV_Putspec_f );
+	Cmd_AddCommand( "clearvelocity", SV_ClearVelocity_f );
+	Cmd_AddCommand( "removevoteflag", SV_RemoveVoteFlag_f );
+	Cmd_AddCommand( "removevoteflags", SV_RemoveVoteFlags_f );
+	Cmd_AddCommand( "clearstatkey", SV_ClearStatKey_f );
+	Cmd_AddCommand( "setstatkey", SV_SetStatKey_f );
+	Cmd_AddCommand( "getvelocity", SV_GetVelocity_f );
+	Cmd_AddCommand( "setvelocity", SV_SetVelocity_f );
+	Cmd_AddCommand( "getviewangles", SV_GetViewAngles_f );
+	Cmd_AddCommand( "setviewangles", SV_SetViewAngles_f );
+	Cmd_AddCommand( "getpmflagsandtime", SV_GetPMFlagsAndTime_f );
+	Cmd_AddCommand( "setpmflagsandtime", SV_SetPMFlagsAndTime_f );
+	Cmd_AddCommand( "getclientname", SV_GetClientName_f );
+	Cmd_AddCommand( "setclientname", SV_SetClientName_f );
+	Cmd_AddCommand( "weaponcheck", SV_WeaponCheck_f );
+	Cmd_AddCommand( "weaponset", SV_WeaponSet_f );
+	Cmd_AddCommand( "weaponremove", SV_WeaponRemove_f );
+	Cmd_AddCommand( "weaponchange", SV_WeaponChange_f );
+	Cmd_AddCommand( "weaponleave", SV_WeaponLeave_f );
+	Cmd_AddCommand( "getweaponstate", SV_GetWeaponState_f );
+	Cmd_AddCommand( "setweaponstate", SV_SetWeaponState_f );
+	Cmd_AddCommand( "getclassweapontime", SV_GetClassWeaponTime_f );
+	Cmd_AddCommand( "setclassweapontime", SV_SetClassWeaponTime_f );
+	Cmd_AddCommand( "getlastactivitytime", SV_GetLastActivityTime_f );
+	Cmd_AddCommand( "listmaps", SV_ListMaps_f );
+	Cmd_AddCommand( "maplist", SV_MapList_f );
+	Cmd_AddCommand( "findmap", SV_FindMap_f );
+	Cmd_AddCommand( "setfindmaptime", SV_SetFindMapTime_f );
+	Cmd_AddCommand( "checkclientpak", SV_CheckClientPak_f );
+	Cmd_AddCommand( "sendservercommand", SV_SendServerCommand_f );
+	Cmd_AddCommand( "setleveltime", SV_SetLevelTime_f );
+	Cmd_AddCommand( "svstime", SV_ShowServerTime_f );
+	Cmd_AddCommand( "getclstate", SV_GetClState_f );
+	Cmd_AddCommand( "rcon", SV_Rcon_f );
+	//
 	Cmd_AddCommand( "fieldinfo", SV_FieldInfo_f );
 	Cmd_AddCommand( "sectorlist", SV_SectorList_f );
 	Cmd_AddCommand( "map", SV_Map_f );

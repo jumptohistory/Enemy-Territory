@@ -176,16 +176,35 @@ SV_SetUserinfo
 ===============
 */
 void SV_SetUserinfo( int index, const char *val ) {
+	qboolean flag;
+
 	if ( index < 0 || index >= sv_maxclients->integer ) {
 		Com_Error( ERR_DROP, "SV_SetUserinfo: bad index %i\n", index );
 	}
 
 	if ( !val ) {
 		val = "";
+	} else {
+		if ( strcmp( Info_ValueForKey( svs.clients[index].userinfo, "name" ), Info_ValueForKey( val, "name" ) ) != 0 ) {
+			flag = qtrue;
+		} else {
+			flag = qfalse;
+		}
 	}
 
 	Q_strncpyz( svs.clients[index].userinfo, val, sizeof( svs.clients[ index ].userinfo ) );
-	Q_strncpyz( svs.clients[index].name, Info_ValueForKey( val, "name" ), sizeof( svs.clients[index].name ) );
+	
+	if ( val[0] ) {
+		if ( flag ) {
+			SV_NumberName( svs.clients + index );
+		} else {
+			Info_SetValueForKey( svs.clients[index].userinfo, "name", Info_ValueForKey( val, "originalname" ) );
+			SV_NumberName( svs.clients + index );
+		}
+
+	}
+
+	Q_strncpyz( svs.clients[index].name, Info_ValueForKey( svs.clients[index].userinfo, "name" ), sizeof( svs.clients[index].name ) );
 }
 
 
@@ -301,6 +320,7 @@ void SV_Startup( void ) {
 		svs.numSnapshotEntities = sv_maxclients->integer * 4 * 64;
 	}
 	svs.initialized = qtrue;
+	svs.lastPlayerLeftTime = 0x7FFFFFFF;
 
 	Cvar_Set( "sv_running", "1" );
 }
@@ -502,6 +522,12 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 	// shut down the existing game if it is running
 	SV_ShutdownGameProgs();
 
+	if ( sv_mapConfigDirectory->string[0] ) {
+		//Cmd_ExecuteString( va("exec %s/%s.cfg", sv_mapConfigDirectory->string, server ) );
+		Cmd_ExecuteString( va("exec %s/%s.cfg", sv_mapConfigDirectory->string, Q_strlwr( server ) ) );
+		Cmd_ExecuteString( va("exec %s/default.cfg", sv_mapConfigDirectory->string ) );
+	}
+
 	Com_Printf( "------ Server Initialization ------\n" );
 	Com_Printf( "Server: %s\n",server );
 
@@ -554,7 +580,7 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 
 	// set nextmap to the same map, but it may be overriden
 	// by the game startup or another console command
-	Cvar_Set( "nextmap", "map_restart 0" );
+//	Cvar_Set( "nextmap", "map_restart 0" );
 //	Cvar_Set( "nextmap", va("map %s", server) );
 
 	// Ridah
@@ -586,12 +612,12 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 	srand( Sys_Milliseconds() );
 	sv.checksumFeed = FS_RandChecksumFeed();
 #endif
+	// set serverinfo visible name
+	// JH: moved before FS_Restart so the pk3 that contains the map can be referenced first
+	Cvar_Set( "mapname", server );
 	FS_Restart( sv.checksumFeed );
 
 	CM_LoadMap( va( "maps/%s.bsp", server ), qfalse, &checksum );
-
-	// set serverinfo visible name
-	Cvar_Set( "mapname", server );
 
 	Cvar_Set( "sv_mapChecksum", va( "%i",checksum ) );
 
@@ -704,6 +730,8 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 	p = FS_ReferencedPakNames();
 	Cvar_Set( "sv_referencedPakNames", p );
 
+	SV_LoadMapList();
+
 	// save systeminfo and serverinfo strings
 	cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
 	SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
@@ -731,7 +759,39 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 
 	Com_Printf( "-----------------------------------\n" );
 
+	if ( *sv_chatConnectedServers->string ) {
+		SV_SendToChatConnectedServers( va( "rsay ^5Map changed to ^7%s ^5on ^7%s", server, sv_hostname->string ) );
+	}
 }
+
+static int string_cmp( const void *str1, const void *str2 ) {
+	return strcmp( *( char ** )str1, *( char ** )str2 );
+}
+
+void SV_LoadMapList( void ) {
+	char **listedFiles;
+	int numfiles, i;
+	char str[BIG_INFO_STRING];
+
+	str[0] = 0;
+	listedFiles = FS_ListFiles( "maps", ".bsp", &numfiles );
+	for ( i = numfiles - 1 ; i >= 0 ; i-- ) {
+		listedFiles[i][strlen( listedFiles[i] ) - 4] = '\0';
+	}
+	qsort( listedFiles, numfiles, sizeof( listedFiles[0] ), string_cmp );
+
+	for ( i = 0 ; i < numfiles ; i++ ) {
+		if ( *str ) {
+			Q_strcat( str, sizeof( str ), " " );
+		}
+		Q_strcat( str, sizeof( str ), listedFiles[i] );
+	}
+
+	Cvar_Set( "sv_mapNames", str );
+
+	FS_FreeFileList( listedFiles );
+}
+
 
 /*
 ===============
@@ -744,6 +804,8 @@ void SV_BotInitBotLib( void );
 
 void SV_Init( void ) {
 	SV_AddOperatorCommands();
+
+	memset( &svs, 0, sizeof( svs ) );
 
 	// serverinfo vars
 	Cvar_Get( "dmflags", "0", /*CVAR_SERVERINFO*/ 0 );
@@ -773,7 +835,7 @@ void SV_Init( void ) {
 	sv_allowAnonymous = Cvar_Get( "sv_allowAnonymous", "0", CVAR_SERVERINFO );
 	sv_friendlyFire = Cvar_Get( "g_friendlyFire", "1", CVAR_SERVERINFO | CVAR_ARCHIVE );           // NERVE - SMF
 	sv_maxlives = Cvar_Get( "g_maxlives", "0", CVAR_ARCHIVE | CVAR_LATCH | CVAR_SERVERINFO );      // NERVE - SMF
-	sv_needpass = Cvar_Get( "g_needpass", "0", CVAR_SERVERINFO | CVAR_ROM );
+	sv_needpass = Cvar_Get( "g_needpass", "0", CVAR_ROM );
 
 	// systeminfo
 	//bani - added cvar_t for sv_cheats so server engine can reference it
@@ -784,6 +846,8 @@ void SV_Init( void ) {
 	Cvar_Get( "sv_pakNames", "", CVAR_SYSTEMINFO | CVAR_ROM );
 	Cvar_Get( "sv_referencedPaks", "", CVAR_SYSTEMINFO | CVAR_ROM );
 	Cvar_Get( "sv_referencedPakNames", "", CVAR_SYSTEMINFO | CVAR_ROM );
+
+	sv_mapNames = Cvar_Get( "sv_mapNames", "", CVAR_ROM );
 
 	// server vars
 	sv_rconPassword = Cvar_Get( "rconPassword", "", CVAR_TEMP );
@@ -844,6 +908,46 @@ void SV_Init( void ) {
 
 	g_gameType = Cvar_Get( "g_gametype", va( "%i", com_gameInfo.defaultGameType ), CVAR_SERVERINFO | CVAR_LATCH );
 
+	// JH
+	sv_numberedNames = Cvar_Get( "sv_numberedNames", "0", 0 );
+	sv_numberedNamesDecoration = Cvar_Get( "sv_numberedNamesDecoration", "", 0 );
+	sv_unneededPakNames = Cvar_Get( "sv_unneededPakNames", "", 0 );
+	//sv_unneededPakNames2 = Cvar_Get( "sv_unneededPakNames2", "", CVAR_ARCHIVE );
+	//sv_unwantedPakNames = Cvar_Get( "sv_unwantedPakNames", "", CVAR_ARCHIVE );
+	sv_optionalPakNames = Cvar_Get( "sv_optionalPakNames", "", 0 );
+	sv_primaryPakNames = Cvar_Get( "sv_primaryPakNames", "", 0 );
+	sv_unlistedMapNames = Cvar_Get( "sv_unlistedMapNames", "", 0 );
+	sv_allowListmaps = Cvar_Get( "sv_allowListmaps", "1", 0 );
+	sv_allowUnpureClients = Cvar_Get( "sv_allowUnpureClients", "0", 0 );
+	sv_showClientCmds = Cvar_Get( "sv_showClientCmds", "0", 0 );
+	sv_fakeLocalPing = Cvar_Get( "fake_local_ping", "0", 0 );
+	sv_fakePingGuid = Cvar_Get( "fake_ping_guid", "", 0 );
+	sv_antiddos = Cvar_Get( "anti_ddos", "0", 0 );
+	sv_getstatusLimit = Cvar_Get( "sv_getstatusLimit", "0", 0 );
+	sv_gameDirReferenced = Cvar_Get( "sv_gameDirReferenced", "1", 0 );
+	sv_processVoiceChats = Cvar_Get( "sv_processVoiceChats", "0", 0 );
+	sv_inactivity = Cvar_Get( "sv_inactivity", "0", 0 );
+	sv_emptyRestartTime = Cvar_Get( "sv_emptyRestartTime", "0", 0 );
+	sv_pretendNonEmpty = Cvar_Get( "sv_pretendNonEmpty", "0", 0 );
+	sv_mapConfigDirectory = Cvar_Get( "sv_mapConfigDirectory", "", 0 );
+	sv_disabledWeapons1 = Cvar_Get ( "sv_disabledWeapons1", "0", 0 );
+	sv_disabledWeapons2 = Cvar_Get ( "sv_disabledWeapons2", "0", 0 );
+	sv_chatCommands = Cvar_Get ( "sv_chatCommands", "0", 0 );
+	sv_infoCountBots = Cvar_Get( "sv_infoCountBots", "1", 0 );
+	sv_save = Cvar_Get( "sv_save", "0", 0 );
+	sv_banners = Cvar_Get( "sv_banners", "0", 0 );
+	sv_bannerTime = Cvar_Get( "sv_bannerTime", "60", 0 );
+	sv_chatConnectedServers = Cvar_Get( "sv_chatConnectedServers", "", 0 );
+	sv_chatHostname = Cvar_Get( "sv_chatHostname", "", 0 );
+	sv_firstMessage = Cvar_Get( "sv_firstMessage", "", 0 );
+	sv_floodThreshold = Cvar_Get( "sv_floodThreshold", "0", 0 );
+	sv_botRealPing = Cvar_Get( "sv_botRealPing", "0", 0 );
+	sv_showMapInfo = Cvar_Get( "sv_showMapInfo", "0", 0 );
+	sv_allowUserFeedbacks = Cvar_Get( "sv_allowUserFeedbacks", "1", 0 );
+
+	rcon_client_password = Cvar_Get( "rconPassword", "", 0 );
+	rconAddress = Cvar_Get( "rconAddress", "", 0 );
+
 	// the download netcode tops at 18/20 kb/s, no need to make you think you can go above
 	sv_dl_maxRate = Cvar_Get( "sv_dl_maxRate", "42000", CVAR_ARCHIVE );
 
@@ -865,6 +969,9 @@ void SV_Init( void ) {
 
 	// init the botlib here because we need the pre-compiler in the UI
 	SV_BotInitBotLib();
+    
+    // write process ID to a file for renice
+    Com_WriteProfile( va( "%s.pid", Cvar_VariableString( "net_port" ) ) );
 
 	svs.serverLoad = -1;
 }
@@ -916,10 +1023,13 @@ before Sys_Quit or Sys_Error
 ================
 */
 void SV_Shutdown( char *finalmsg ) {
+	extern unsigned long sys_timeBase;
+
 	if ( !com_sv_running || !com_sv_running->integer ) {
 		return;
 	}
 
+	Com_Printf( "\n%s\n", finalmsg );
 	Com_Printf( "----- Server Shutdown -----\n" );
 
 	if ( svs.clients && !com_errorEntered ) {
@@ -942,10 +1052,15 @@ void SV_Shutdown( char *finalmsg ) {
 	memset( &svs, 0, sizeof( svs ) );
 	svs.serverLoad = -1;
 
+	sys_timeBase = 0;
+
 	Cvar_Set( "sv_running", "0" );
 
 	Com_Printf( "---------------------------\n" );
 
 	// disconnect any local clients
 	CL_Disconnect( qfalse );
+
+    // delete the PID file
+    FS_Delete( va( "%s.pid", Cvar_VariableString( "net_port" ) ) );
 }

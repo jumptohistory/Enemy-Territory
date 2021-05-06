@@ -515,9 +515,9 @@ void NET_OpenIP( void ) {
 	int port;
 	int i;
 
-	ip = Cvar_Get( "net_ip", "localhost", 0 );
+	ip = Cvar_Get( "net_ip", "localhost", CVAR_ROM );
 
-	port = Cvar_Get( "net_port", va( "%i", PORT_SERVER ), 0 )->value;
+	port = Cvar_Get( "net_port", va( "%i", PORT_SERVER ), CVAR_ROM )->value;
 
 	for ( i = 0 ; i < 10 ; i++ ) {
 		ip_socket = NET_IPSocket( ip->string, port + i );

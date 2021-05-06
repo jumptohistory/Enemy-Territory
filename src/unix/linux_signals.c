@@ -42,17 +42,32 @@ static qboolean signalcaught = qfalse;;
 void Sys_Exit( int ); // bk010104 - abstraction
 
 static void signal_handler( int sig ) { // bk010104 - replace this... (NOTE TTimo huh?)
+	static int lastTime = -1;
+	int currentTime = Sys_Milliseconds();
+
 	if ( signalcaught ) {
 		printf( "DOUBLE SIGNAL FAULT: Received signal %d, exiting...\n", sig );
 		Sys_Exit( 1 ); // bk010104 - abstraction
 	}
 
+	if ( lastTime == -1 || currentTime - lastTime > 1000 ) {
+		lastTime = currentTime;
+		if ( currentTime >= 0 ) {
+			printf( "Received signal %d\n", sig );
+			return;
+		}
+	}
+	
 	signalcaught = qtrue;
 	printf( "Received signal %d, exiting...\n", sig );
 #ifndef DEDICATED
 	GLimp_Shutdown(); // bk010104 - shouldn't this be CL_Shutdown
 #endif
 	Sys_Exit( 0 ); // bk010104 - abstraction NOTE TTimo send a 0 to avoid DOUBLE SIGNAL FAULT
+}
+static void error_signal_handler( int sig ) {
+	printf( "Received signal %d, exiting...\n", sig );
+	Sys_Exit( 1 );
 }
 #endif
 
@@ -62,13 +77,14 @@ void InitSig( void ) {
 	signal( SIGHUP, signal_handler );
 	signal( SIGINT, signal_handler );
 	signal( SIGQUIT, signal_handler );
-	signal( SIGILL, signal_handler );
+	signal( SIGILL, error_signal_handler );
 	signal( SIGTRAP, signal_handler );
 	signal( SIGIOT, signal_handler );
-	signal( SIGBUS, signal_handler );
+	signal( SIGBUS, error_signal_handler );
 	signal( SIGFPE, signal_handler );
 	signal( SIGKILL, signal_handler );
-	signal( SIGSEGV, signal_handler );
+	signal( SIGSEGV, error_signal_handler );
 	signal( SIGTERM, signal_handler );
+	signal( SIGTSTP, SIG_IGN );
 #endif
 }

@@ -49,6 +49,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #define MAX_BPS_WINDOW      20          // NERVE - SMF - net debugging
 
+#define MAX_IPS_NUM 1024
+#define MAX_PACKETS_IN_TIME 50
+#define GETSTATUS_ACTIVATE_ANTIDDOS 60
+
 typedef struct svEntity_s {
 	struct worldSector_s *worldSector;
 	struct svEntity_s *nextEntityInWorldSector;
@@ -219,6 +223,25 @@ typedef struct client_s {
 
 	//bani
 	int downloadnotify;
+
+	//JH
+	int lastActivityTime;
+	struct {
+		int buttons[8];
+		int wbuttons[8];
+		//int weapon[8];
+		//int flags[8];
+		int forwardmove, rightmove, upmove;
+	} lastUsercmdTimes;
+	int nextFindmapTime;
+	int nextMaplistTime;
+	int nextServercommandTime;
+	int voiceChatTime;
+	int pakChecksums[1024];
+	int numPaks;
+	playerState_t *savedPositions[3];
+	int floodTime;
+	int nextFeedbackTime;
 } client_t;
 
 //=============================================================================
@@ -279,6 +302,21 @@ typedef struct {
 	int totalFrameTime;
 	int currentFrameIndex;
 	int serverLoad;
+
+	int numIps;
+	struct{
+		byte ip[4];
+		int maxPacketsTime;
+		//int time[MAX_PACKETS_IN_TIME];
+		int getstatus_time;
+		int getinfo_time; 
+		int getstatusLimitTime;
+		int getstatusRestrictionTime;
+	} ips[MAX_IPS_NUM];
+	//static int getstatus_time[GETSTATUS_ACTIVATE_ANTIDDOS] = {0};
+	int getstatusTime;
+	unsigned int lastPlayerLeftTime;
+	unsigned int tempRestartTime;
 } serverStatic_t;
 
 
@@ -327,6 +365,47 @@ extern cvar_t  *sv_showAverageBPS;          // NERVE - SMF - net debugging
 
 extern cvar_t* g_gameType;
 
+extern cvar_t *sv_numberedNames;
+extern cvar_t *sv_numberedNamesDecoration;
+extern cvar_t *sv_unneededPakNames;
+extern cvar_t *sv_unneededPakNames2;
+extern cvar_t *sv_unwantedPakNames;
+extern cvar_t *sv_optionalPakNames;
+extern cvar_t *sv_primaryPakNames;
+extern cvar_t *sv_unlistedMapNames;
+extern cvar_t *sv_allowListmaps;
+extern cvar_t *sv_allowUnpureClients;
+extern cvar_t *sv_showClientCmds;
+extern cvar_t *sv_fakeLocalPing;
+extern cvar_t *sv_fakePingGuid;
+extern cvar_t *sv_antiddos;
+extern cvar_t *sv_getstatusLimit;
+extern cvar_t *sv_gameDirReferenced;
+extern cvar_t *sv_processVoiceChats;
+extern cvar_t *sv_inactivity;
+extern cvar_t *sv_emptyRestartTime;
+extern cvar_t *sv_pretendNonEmpty;
+extern cvar_t *sv_mapConfigDirectory;
+extern cvar_t *sv_disabledWeapons1;
+extern cvar_t *sv_disabledWeapons2;
+extern cvar_t *sv_chatCommands;
+extern cvar_t *sv_infoCountBots;
+extern cvar_t *sv_save;
+extern cvar_t *sv_banners;
+extern cvar_t *sv_bannerTime;
+extern cvar_t *sv_chatConnectedServers;
+extern cvar_t *sv_chatHostname;
+extern cvar_t *sv_firstMessage;
+extern cvar_t *sv_floodThreshold;
+extern cvar_t *sv_botRealPing;
+extern cvar_t *sv_showMapInfo;
+extern cvar_t *sv_allowUserFeedbacks;
+
+extern cvar_t *sv_mapNames;
+
+extern cvar_t  *rcon_client_password;
+extern cvar_t  *rconAddress;
+
 // Rafael gameskill
 //extern	cvar_t	*sv_gameskill;
 // done
@@ -360,10 +439,8 @@ extern cvar_t *sv_fullmsg;
 void SV_FinalCommand( char *cmd, qboolean disconnect ); // ydnar: added disconnect flag so map changes can use this function as well
 void QDECL SV_SendServerCommand( client_t *cl, const char *fmt, ... );
 
-
 void SV_AddOperatorCommands( void );
 void SV_RemoveOperatorCommands( void );
-
 
 void SV_MasterHeartbeat( const char *hbname );
 void SV_MasterShutdown( void );
@@ -371,6 +448,8 @@ void SV_MasterShutdown( void );
 void SV_MasterGameCompleteStatus();     // NERVE - SMF
 //bani - bugtraq 12534
 qboolean SV_VerifyChallenge( char *challenge );
+
+void SV_SendToChatConnectedServers( char *msg );
 
 
 //
@@ -389,6 +468,7 @@ void SV_CreateBaseline( void );
 void SV_ChangeMaxClients( void );
 void SV_SpawnServer( char *server, qboolean killBots );
 
+void SV_LoadMapList( void );
 
 
 //
@@ -402,15 +482,23 @@ void SV_AuthorizeIpPacket( netadr_t from );
 
 void SV_ExecuteClientMessage( client_t *cl, msg_t *msg );
 void SV_UserinfoChanged( client_t *cl );
+void SV_NumberName( client_t *cl );
 
 void SV_ClientEnterWorld( client_t *client, usercmd_t *cmd );
 void SV_FreeClientNetChan( client_t* client );
 void SV_DropClient( client_t *drop, const char *reason );
+void SV_CalcTempRestartTime( void );
 
 void SV_ExecuteClientCommand( client_t *cl, const char *s, qboolean clientOK, qboolean premaprestart );
 void SV_ClientThink( client_t *cl, usercmd_t *cmd );
 
 void SV_WriteDownloadToClient( client_t *cl, msg_t *msg );
+
+void SV_ListMaps( client_t *cl );
+void SV_MapList( client_t *cl );
+void SV_FindMap( client_t *cl, int start );
+void SV_SetFindMapTime( int clientNum, int time );
+void SV_MapInfo_f( client_t *cl );
 
 //
 // sv_ccmds.c
@@ -531,6 +619,10 @@ void SV_ClipToEntity( trace_t *trace, const vec3_t start, const vec3_t mins, con
 void SV_Netchan_Transmit( client_t *client, msg_t *msg );
 void SV_Netchan_TransmitNextFragment( client_t *client );
 qboolean SV_Netchan_Process( client_t *client, msg_t *msg );
+
+// files.c
+qboolean FS_ClientHasPak( client_t *cl, const char *pakName );
+long FS_PakInfoForFile( const char *filename, char *pakBasename );
 
 //bani - cl->downloadnotify
 #define DLNOTIFY_REDIRECT   0x00000001  // "Redirecting client ..."

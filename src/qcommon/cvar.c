@@ -743,6 +743,48 @@ void Cvar_SetA_f( void ) {
 	v->flags |= CVAR_ARCHIVE;
 }
 
+
+void Cvar_GetFlags_f( void ) {
+	cvar_t *var;
+
+	if ( Cmd_Argc() != 2 ) {
+		Com_Printf( "usage: getflags <variable>\n" );
+		return;
+	}
+
+	var = Cvar_FindVar( Cmd_Argv( 1 ) );
+	if ( !var ) {
+		return;
+	}
+	Cvar_Set( "returnvalue", va( "%d", var->flags ) );
+}
+
+void Cvar_SetFlags_f( void ) {
+	cvar_t *var;
+	int flags;
+	char *e;
+
+	if ( Cmd_Argc() < 3 ) {
+		Com_Printf( "usage: setflags <variable> <flags>\n" );
+		return;
+	}
+
+	var = Cvar_FindVar( Cmd_Argv( 1 ) );
+	if ( !var ) {
+		return;
+	}
+
+	flags = ( int )strtol( Cmd_Argv( 2 ), &e, 0 );
+	if ( *e ) {
+		return;
+	}
+	var->flags = flags;
+
+	if ( !strcmp( Cmd_Argv( 3 ), "update" ) ) {
+		cvar_modifiedFlags |= var->flags;
+	}
+}
+
 /*
 ============
 Cvar_Reset_f
@@ -755,6 +797,54 @@ void Cvar_Reset_f( void ) {
 	}
 	Cvar_Reset( Cmd_Argv( 1 ) );
 }
+
+
+void Cvar_Unset_f( void ) {
+	cvar_t *var;
+	qboolean force = qfalse;
+
+	if ( Cmd_Argc() == 3 && strcmp( Cmd_Argv( 2 ), "force" ) == 0 ) {
+		force = qtrue;
+	} else if ( Cmd_Argc() != 2 ) {
+		Com_Printf( "usage: unset <variable> [force]\n" );
+		return;
+	}
+
+	var = Cvar_FindVar( Cmd_Argv( 1 ) );
+	if ( var && ( force || var->flags & CVAR_USER_CREATED ) ) {
+		cvar_t *pos;
+
+		if ( cvar_vars == var ) {
+			cvar_vars = var->next;
+		}
+
+		for ( pos = cvar_vars ; pos ; pos = pos->next ) {
+			if ( pos->next == var ) {
+				pos->next = var->next;
+			}
+			if ( pos->hashNext == var ) {
+				pos->hashNext = var->hashNext;
+			}
+		}
+
+		if ( var->name ) {
+			Z_Free( var->name );
+		}
+		if ( var->string ) {
+			Z_Free( var->string );
+		}
+		if ( var->latchedString ) {
+			Z_Free( var->latchedString );
+		}
+		if ( var->resetString ) {
+			Z_Free( var->resetString );
+		}
+		// clear the var completely, since we
+		// can't remove the index from the list
+		memset( var, 0, sizeof( var ) );
+	}
+}
+
 
 /*
 ============
@@ -858,6 +948,102 @@ void Cvar_List_f( void ) {
 
 	Com_Printf( "\n%i total cvars\n", i );
 	Com_Printf( "%i cvar indexes\n", cvar_numIndexes );
+}
+
+
+void Cvar_Flags_f( void ) {
+	cvar_t *var;
+
+	if ( Cmd_Argc() < 2 ) {
+		Com_Printf( "usage: cvarflags <variable>\n");
+		return;
+	}
+
+	var = Cvar_FindVar( Cmd_Argv( 1 ) );
+	if ( !var ) {
+		Com_Printf( "Cvar not found.\n" );
+		return;
+	}
+
+	if ( Cmd_Argc() >= 3 )  {
+		char *format = Cmd_Argv( 2 );
+
+		if ( Q_stricmpn( format, "dec", 3 ) == 0 ) {
+			Com_Printf( "%d\n", var->flags );
+		} else if ( Q_stricmpn( format, "hex", 3 ) == 0 ) {
+			Com_Printf( "%x\n", var->flags );
+		} else if ( Q_stricmpn( format, "oct", 3 ) == 0 ) {
+			Com_Printf( "%o\n", var->flags );
+		} else {
+			Com_Printf( "usage: cvarflags <variable> [<format>]\n" );
+		}
+	} else {
+		char buf[512];
+
+		buf[0] = 0;
+
+		if ( var->flags & CVAR_ARCHIVE ) {
+			Q_strcat( buf, sizeof( buf ), "ARCHIVE " );
+		}
+		if ( var->flags & CVAR_USERINFO ) {
+			Q_strcat( buf, sizeof( buf ), "USERINFO " );
+		}
+		if ( var->flags & CVAR_SERVERINFO ) {
+			Q_strcat( buf, sizeof( buf ), "SERVERINFO " );
+		}
+		if ( var->flags & CVAR_SYSTEMINFO ) {
+			Q_strcat( buf, sizeof( buf ), "SYSTEMINFO " );
+		}
+		if ( var->flags & CVAR_INIT ) {
+			Q_strcat( buf, sizeof( buf ), "INIT " );
+		}
+		if ( var->flags & CVAR_LATCH ) {
+			Q_strcat( buf, sizeof( buf ), "LATCH " );
+		}
+		if ( var->flags & CVAR_ROM ) {
+			Q_strcat( buf, sizeof( buf ), "ROM " );
+		}
+		if ( var->flags & CVAR_USER_CREATED ) {
+			Q_strcat( buf, sizeof( buf ), "USER_CREATED " );
+		}
+		if ( var->flags & CVAR_TEMP ) {
+			Q_strcat( buf, sizeof( buf ), "TEMP " );
+		}
+		if ( var->flags & CVAR_CHEAT ) {
+			Q_strcat( buf, sizeof( buf ), "CHEAT " );
+		}
+		if ( var->flags & CVAR_NORESTART ) {
+			Q_strcat( buf, sizeof( buf ), "NORESTART " );
+		}
+		if ( var->flags & CVAR_WOLFINFO ) {
+			Q_strcat( buf, sizeof( buf ), "WOLFINFO " );
+		}
+		if ( var->flags & CVAR_UNSAFE ) {
+			Q_strcat( buf, sizeof( buf ), "UNSAFE " );
+		}
+		if ( var->flags & CVAR_SERVERINFO_NOUPDATE ) {
+			Q_strcat( buf, sizeof( buf ), "SERVERINFO_NOUPDATE " );
+		}
+
+		Com_Printf( "%s\n", buf );
+	}
+}
+
+void Cvar_StringTokens_f( void ) {
+	cvar_t *var;
+
+	if ( Cmd_Argc() != 2 ) {
+		Com_Printf( "usage: cvarstringtokens <variable>\n" );
+		return;
+	}
+
+	var = Cvar_FindVar( Cmd_Argv( 1 ) );
+	if ( !var ) {
+		return;
+	}
+
+	Cmd_TokenizeString( var->string );
+	Com_Printf( "%d tokens\n", Cmd_Argc() );
 }
 
 /*
@@ -1041,11 +1227,16 @@ void Cvar_Init( void ) {
 	Cmd_AddCommand( "toggle", Cvar_Toggle_f );
 	Cmd_AddCommand( "cycle", Cvar_Cycle_f );  // ydnar
 	Cmd_AddCommand( "set", Cvar_Set_f );
+	Cmd_AddCommand( "unset", Cvar_Unset_f );
 	Cmd_AddCommand( "sets", Cvar_SetS_f );
 	Cmd_AddCommand( "setu", Cvar_SetU_f );
 	Cmd_AddCommand( "seta", Cvar_SetA_f );
+	Cmd_AddCommand( "getflags", Cvar_GetFlags_f );
+	Cmd_AddCommand( "setflags", Cvar_SetFlags_f );
 	Cmd_AddCommand( "reset", Cvar_Reset_f );
 	Cmd_AddCommand( "cvarlist", Cvar_List_f );
+	Cmd_AddCommand( "cvarflags", Cvar_Flags_f );
+	Cmd_AddCommand( "cvarstringtokens", Cvar_StringTokens_f );
 	Cmd_AddCommand( "cvar_restart", Cvar_Restart_f );
 
 	// NERVE - SMF - can't rely on autoexec to do this

@@ -30,6 +30,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "server.h"
 
+#ifdef WIN32
+#include <windows.h>
+#endif
+
 static void SV_CloseDownload( client_t *cl );
 
 /*
@@ -440,6 +444,12 @@ void SV_DirectConnect( netadr_t from ) {
 	cl->reliableSequence = 0;
 
 gotnewcl:
+	for ( i = 0 ; i < 3 ; i++ ) {
+		if ( newcl->savedPositions[i] ) {
+			Z_Free( newcl->savedPositions[i] );
+		}
+	}
+
 	// build a new connection
 	// accept the new client
 	// this is the only place a client_t is ever initialized
@@ -455,8 +465,18 @@ gotnewcl:
 	Netchan_Setup( NS_SERVER, &newcl->netchan, from, qport );
 	// init the netchan queue
 
+	if ( Cvar_VariableIntegerValue( "sv_replaceInvalidGuid" ) ) {
+		char *cl_guid = Info_ValueForKey( userinfo, "cl_guid" );
+		if ( strlen( cl_guid ) < 16 ) {
+			byte *ip = newcl->netchan.remoteAddress.ip;
+			Info_SetValueForKey( userinfo, "cl_guid", va( "%s %d.%d.%d.%d", Q_strupr( cl_guid ), ip[0], ip[1], ip[2], ip[3] ) );
+		}
+	}
+
 	// save the userinfo
 	Q_strncpyz( newcl->userinfo, userinfo, sizeof( newcl->userinfo ) );
+
+	SV_NumberName( newcl );
 
 	// get the game a chance to reject this connection or modify the userinfo
 	denied = (char *)VM_Call( gvm, GAME_CLIENT_CONNECT, clientNum, qtrue, qfalse ); // firstTime = qtrue
@@ -470,6 +490,16 @@ gotnewcl:
 	}
 
 	SV_UserinfoChanged( newcl );
+
+	if ( newcl->netchan.remoteAddress.type != NA_BOT ) {
+		if ( *sv_chatConnectedServers->string ) {
+			SV_SendToChatConnectedServers( va( "rsay %s ^7connected to %s", newcl->name, sv_hostname->string ) );
+		}
+		if ( *sv_firstMessage->string ) {
+			SV_SendServerCommand( newcl, "chat \"%s\"", sv_firstMessage->string );
+		}
+
+	}
 
 	// DHM - Nerve :: Clear out firstPing now that client is connected
 	svs.challenges[i].firstPing = 0;
@@ -500,6 +530,8 @@ gotnewcl:
 	if ( count == 1 || count == sv_maxclients->integer ) {
 		SV_Heartbeat_f();
 	}
+	/*svs.lastPlayerLeftTime = 0x7FFFFFFF;
+	svs.tempRestartTime = 0x7FFFFFFF - 600000;*/
 }
 
 /*
@@ -512,7 +544,7 @@ or crashing -- SV_FinalCommand() will handle that
 =====================
 */
 void SV_DropClient( client_t *drop, const char *reason ) {
-	int i;
+	int i, count = 0, bots = 0;
 	challenge_t *challenge;
 	qboolean isBot = qfalse;
 
@@ -568,6 +600,8 @@ void SV_DropClient( client_t *drop, const char *reason ) {
 
 	if ( drop->netchan.remoteAddress.type == NA_BOT ) {
 		SV_BotFreeClient( drop - svs.clients );
+	} else if ( *sv_chatConnectedServers->string ) {
+		SV_SendToChatConnectedServers( va( "rsay %s ^7disconnected from %s", drop->name, sv_hostname->string ) );
 	}
 
 	// nuke user info
@@ -579,14 +613,26 @@ void SV_DropClient( client_t *drop, const char *reason ) {
 	// if there is already a slot for this ip, reuse it
 	for ( i = 0 ; i < sv_maxclients->integer ; i++ ) {
 		if ( svs.clients[i].state >= CS_CONNECTED ) {
-			break;
+			count++;
+			if ( svs.clients[i].netchan.remoteAddress.type == NA_BOT ) {
+				bots++;
+			}
 		}
 	}
-	if ( i == sv_maxclients->integer ) {
-		SV_Heartbeat_f();
+	if ( count == 0 ) {
+		if ( !sv_pretendNonEmpty->integer ) {
+			SV_Heartbeat_f();
+		}
+
+#ifdef WIN32
+		// allow auto sleep
+		SetThreadExecutionState( ES_CONTINUOUS );
+#endif
+	}
+	if ( drop->netchan.remoteAddress.type != NA_BOT && count - bots == 0 ) {
+		svs.lastPlayerLeftTime = 0x7FFFFFFF;
 	}
 }
-
 /*
 ================
 SV_SendClientGameState
@@ -637,7 +683,19 @@ void SV_SendClientGameState( client_t *client ) {
 		if ( sv.configstrings[start][0] ) {
 			MSG_WriteByte( &msg, svc_configstring );
 			MSG_WriteShort( &msg, start );
-			MSG_WriteBigString( &msg, sv.configstrings[start] );
+			if ( sv_optionalPakNames->string[0] && start == CS_SYSTEMINFO && atoi( Info_ValueForKey( client->userinfo, "morepaks" ) ) ) {
+				char referencedPakNames[BIG_INFO_STRING], referencedPaks[BIG_INFO_STRING];
+				char newSysteminfo[BIG_INFO_STRING];
+				
+				strcpy( newSysteminfo, sv.configstrings[start] );
+				FS_OptionalPaks( referencedPaks, referencedPakNames );
+				Info_SetValueForKey_Big( newSysteminfo, "sv_referencedPaks", va( "%s %s", Cvar_VariableString( "sv_referencedPaks" ), referencedPaks ) );
+				Info_SetValueForKey_Big( newSysteminfo, "sv_referencedPakNames", va( "%s %s", Cvar_VariableString( "sv_referencedPakNames"), referencedPakNames ) );
+
+				MSG_WriteBigString( &msg, newSysteminfo );
+			} else {
+				MSG_WriteBigString( &msg, sv.configstrings[start] );
+			}
 		}
 	}
 
@@ -868,6 +926,521 @@ void SV_WWWDownload_f( client_t *cl ) {
 
 	Com_Printf( "SV_WWWDownload: unknown wwwdl subcommand '%s' for client '%s'\n", subcmd, cl->name );
 	SV_DropClient( cl, va( "SV_WWWDownload: unknown wwwdl subcommand '%s'", subcmd ) );
+}
+
+
+void SV_ListMaps( client_t *cl ) {
+	int nextTime;
+
+	if ( cl->nextMaplistTime + 5000 >= cl->nextFindmapTime + 1000 ) {
+		nextTime = cl->nextMaplistTime + 5000;
+	} else {
+		nextTime = cl->nextFindmapTime + 1000;
+	}
+	if ( nextTime > svs.time ) {
+		int sec = ( int )ceil( ( double )( nextTime - svs.time ) / 1000 );
+
+		SV_SendServerCommand( cl, sec == 1 ? "print \"^3listmaps: ^7Wait %d second to use again\n\"" : "print \"^3listmaps: ^7Wait %d seconds to use again\n\"", sec );
+		return;
+	}
+
+	if ( sv_allowListmaps->integer != 0 ) {
+		char outString[10240];
+		char buf[999];
+		char unlistMaps[128][MAX_QPATH];
+		int numUnlistMaps;
+		int length, retColumn, argc;
+		int i;
+
+		Cmd_TokenizeString( sv_unlistedMapNames->string );
+		for ( i = 0 ; i < Cmd_Argc() ; i++ ) {
+			Q_strncpyz( unlistMaps[i], Cmd_Argv( i ), sizeof( unlistMaps[i] ) );
+			Q_strlwr( unlistMaps[i] );
+		}
+		numUnlistMaps = i;
+
+		Cmd_TokenizeString( sv_mapNames->string );
+		outString[0] = 0;
+		retColumn = 2;
+		argc = Cmd_Argc();
+		for ( i = 0 ; i < argc ; i++ ) {
+			char *argv = Cmd_Argv( i );
+			int j;
+			qboolean flag = qfalse;
+
+			for ( j = 0 ; j < numUnlistMaps ; j++ ) {
+				if ( strcmp( argv, unlistMaps[j] ) == 0 ) {
+					flag = qtrue;
+				}
+			}
+
+			if ( flag ) {
+				retColumn = ( retColumn + 1 ) % 3;
+			} else if ( i % 3 == retColumn || i == argc - 1 || strlen( argv ) > 26 ) {
+				Q_strcat( outString, sizeof( outString ), va( "%s\n", argv ) );
+				retColumn = i % 3;
+			} else {
+				char buf[29];
+
+				Q_strncpyz( buf, "                                                  ", sizeof( buf ) - strlen( argv ) );
+				Q_strcat( outString, sizeof( outString ), va( "%s%s", argv, buf ) );
+			}
+		}
+
+		length = strlen( outString );
+		if ( length > ( sizeof ( buf ) - 1 ) * 10 ) {
+			Q_strncpyz( outString, sv_mapNames->string, sizeof( outString ) );
+			Q_strcat( outString, sizeof( outString ), "\n" );
+			length = strlen( outString );
+		}
+
+		for ( i = 0 ; i < length ; i += sizeof( buf ) - 1 ) {
+			Q_strncpyz( buf, &outString[i], sizeof( buf ) );
+			SV_SendServerCommand( cl, "print \"%s\"", buf );
+		}
+		cl->nextMaplistTime = svs.time + 25000;
+		cl->nextFindmapTime = svs.time + 2000;
+	} else {
+		SV_SendServerCommand( cl, "print \"Sorry, ^3listmaps ^7is disabled\n\"");
+	}
+}
+
+void SV_MapList( client_t *cl ) {
+	if ( cl->nextMaplistTime > svs.time || cl->nextFindmapTime > svs.time ) {
+		int nt = cl->nextMaplistTime >= cl->nextFindmapTime ? cl->nextMaplistTime : cl->nextFindmapTime;
+		int sec = ( int )ceil( ( double )( nt - svs.time ) / 1000 );
+
+		SV_SendServerCommand( cl, sec == 1 ? "print \"^3maplist: ^7Wait %d second to use again\n\"" : "print \"^3maplist: ^7Wait %d seconds to use again\n\"", sec );
+		return;
+	}
+
+	if ( sv_allowListmaps->integer != 0 ) {
+		int i, length = strlen( sv_mapNames->string );
+		char buf[999];
+
+		for ( i = 0 ; i < length ; i += sizeof( buf ) - 1 ) {
+			Q_strncpyz( buf, &sv_mapNames->string[i], sizeof( buf ) );
+			SV_SendServerCommand( cl, "print \"%s\"", buf );
+		}
+		SV_SendServerCommand( cl, "print \"\n\"");
+
+		cl->nextMaplistTime = svs.time + 20000;
+		cl->nextFindmapTime = svs.time + 1000;
+	} else {
+		SV_SendServerCommand( cl, "print \"Sorry, ^3listmaps ^7is disabled\n\"");
+	}
+}
+
+static void SV_ListMaps_f( client_t *cl ) {
+	if ( cl->nextServercommandTime > svs.time ) {
+		return;
+	} 
+	cl->nextServercommandTime = svs.time + 200;
+
+	SV_ListMaps( cl );
+}
+
+static void SV_MapList_f( client_t *cl ) {
+	if ( cl->nextServercommandTime > svs.time ) {
+		return;
+	} 
+
+	cl->nextServercommandTime = svs.time + 200;
+	SV_MapList( cl );
+}
+
+void SV_FindMap( client_t *cl, int start ) {
+	char args[16][MAX_QPATH];
+	int argc;
+	char *matches[64];
+	int index = 0;
+	int retColumn;
+	int i;
+
+	if ( cl ) {
+		if ( cl->nextFindmapTime > svs.time ) {
+			int sec = ( int )ceil( ( double )( cl->nextFindmapTime - svs.time ) / 1000 );
+			SV_SendServerCommand( cl, sec == 1 ? "print \"^3findmap: ^7Wait %d second to use again\n\"" : "print \"^3findmap: ^7Wait %d seconds to use again\n\"", sec );
+			return;
+		}
+	}
+
+	argc = Cmd_Argc();
+
+	if ( sv_allowListmaps->integer == 0 ) {
+		SV_SendServerCommand( cl, "print \"Sorry, ^3findmap ^7is disabled\n\"");
+		return;
+	} else if ( argc < 2 ) {
+		SV_SendServerCommand( cl, "print \"^3usage: ^7\\findmap <keywords>\n\"" );
+		return;
+	} else if ( argc > sizeof( args ) / sizeof( args[0] ) ) {
+		SV_SendServerCommand( cl, "print \"^3findmap: ^7Too many keywords\n\"" );
+		return;
+	}
+
+	for ( i = 0 ; i < argc ; i++ ) {
+		Q_strncpyz( args[i], Cmd_Argv( i ), sizeof( args[i] ) );
+		Q_strlwr( args[i] );
+	}
+
+	Cmd_TokenizeString( sv_mapNames->string );
+
+	for ( i = 0 ; i < Cmd_Argc() ; i++ ) {
+		char *p = Cmd_Argv( i );
+		qboolean match;
+		int j;
+
+		match = qtrue;
+		for ( j = start ; j < argc ; j++ ) {
+			if ( strstr( p, args[j] ) == NULL ) {
+				match = qfalse;
+				break;
+			}
+		}
+		if ( match ) {
+			if ( index >= sizeof( matches ) / sizeof( matches[0] ) ) {
+				if ( cl ) {
+					SV_SendServerCommand( cl, "print \"^3findmap: ^7Too many matches\n\"" );
+				} else {
+					Cvar_Set( "returnvalue", "^3findmap: ^7Too many matches" );
+				}
+				return;
+			}
+			matches[index] = p;
+			index++;
+		}
+	}
+
+	if ( cl ) {
+		char outString[2048];
+
+		outString[0] = '\0';
+		retColumn = 2;
+		for ( i = 0 ; i < index ; i++ ) {
+			if ( i % 3 == retColumn || i == index - 1 || strlen( matches[i] ) > 26 ) {
+				Q_strcat( outString, sizeof( outString ), va( "%s\n", matches[i] ) );
+				retColumn = i % 3;
+			} else {
+				char buf[29];
+
+				Q_strncpyz( buf, "                                                  ", sizeof( buf ) - strlen( matches[i] ) );
+				Q_strcat( outString, sizeof( outString ), va( "%s%s", matches[i], buf ) );
+			}
+		}
+		if ( i == 0 ) {
+			SV_SendServerCommand( cl, "print \"^3findmap: ^7Map not found\n\"" );
+			return;
+		}
+
+		if ( strlen( outString ) >= sizeof( outString ) ) {
+			Com_Error( ERR_FATAL, "SV_FindMap_f: outString overflowed" );
+		} else if ( strlen( outString ) == sizeof( outString ) - 1 ) {
+			SV_SendServerCommand( cl, "print \"^3findmap: ^7Too many matches\n\"" );
+			return;
+		} else {
+			int length = strlen( outString );
+			char buf[999];
+
+			if ( length >= sizeof( buf ) ) {
+				SV_SendServerCommand( cl, "print \"^3findmap: ^7Too many matches\n\"" );
+				return;
+			}
+			for ( i = 0 ; i < length ; i += sizeof( buf ) - 1 ) {
+				Q_strncpyz( buf, &outString[i], sizeof( buf ) );
+				SV_SendServerCommand( cl, "print \"%s\"", buf );
+			}
+			cl->nextFindmapTime = svs.time + 1000;
+		}
+	} else {
+		char outString[256];
+
+		if ( index == 0 ) {
+			Cvar_Set( "returnvalue", "^3findmap: ^7Map not found" );
+			return;
+		}
+
+		outString[0] = '\0';
+		for ( i = 0 ; i < index ; i++ ) {
+			if ( i > 0 ) {
+				Q_strcat( outString, sizeof( outString ), " " );
+			}
+			if ( strlen( outString ) + strlen( matches[i] ) >= sizeof( outString ) ) {
+				Cvar_Set( "returnvalue", "^3findmap: ^7Too many matches" );
+				return;
+			}
+			Q_strcat( outString, sizeof( outString ), matches[i] );
+		}
+
+		Cvar_Set( "returnvalue", outString );
+	}
+}
+
+static void SV_FindMap_f( client_t *cl ) {
+	if ( cl->nextServercommandTime > svs.time ) {
+		return;
+	}
+	cl->nextServercommandTime = svs.time + 200;
+
+	SV_FindMap( cl, 1 );
+}
+
+void SV_SetFindMapTime( int clientNum, int time ) {
+	if ( clientNum >= 0 && clientNum < MAX_CLIENTS ) {
+		if ( svs.time + time > svs.clients[clientNum].nextFindmapTime ) {
+			if ( time >= 30000 ) {
+				svs.clients[clientNum].nextFindmapTime = svs.time + 30000;
+			} else {
+				svs.clients[clientNum].nextFindmapTime = svs.time + time;
+			}
+		}
+	}
+}
+
+static void SV_SendInfo( client_t *cl, const char *info, qboolean chatCmd ) {
+	if ( chatCmd ) {
+		char buf[1024];
+		char *p;
+
+		Q_strncpyz( buf, info, sizeof( buf ) );
+		p = strtok( buf, "\n" );
+		while ( p ) {
+			SV_SendServerCommand( NULL, "chat \"%s\"", p );
+			p = strtok( NULL, "\n" );
+		}
+	} else {
+		SV_SendServerCommand( cl, "print \"%s\n\"", info );
+	}
+}
+
+void SV_MapInfo_f( client_t *cl ){
+	fileHandle_t fp;
+	long len;
+	char buf[4096];
+	char pakBasename[MAX_OSPATH];
+	char args[16][MAX_QPATH];
+	char targetMap[MAX_QPATH] = "";
+	int argc = Cmd_Argc();
+	char *cmd = Cmd_Argv(0);
+	qboolean chatCmd;
+
+	if ( cmd[0] == '!' || cmd[0] == '/' || cmd[0] == '\\' ) {
+		chatCmd = qtrue;
+	} else {
+		chatCmd = qfalse;
+	}
+	if ( cl ) {
+		if ( !sv_allowListmaps->integer ) {
+			SV_SendInfo( cl, "Sorry, ^3mapinfo ^7is disabled", chatCmd );
+			return;
+		}
+		if ( cl->nextFindmapTime > svs.time ) {
+			int sec = ( int )ceil( ( double )( cl->nextFindmapTime - svs.time ) / 1000 );
+			SV_SendServerCommand( cl, "print \"^3mapinfo: ^7wait %d %s to use again\n\"", sec, sec == 1 ? "second" : "seconds" );
+			return;
+		}
+		cl->nextFindmapTime = svs.time + 1000;
+	}
+
+	if ( argc > sizeof( args ) / sizeof( args[0] ) ) {
+		SV_SendInfo( cl, "Too many keywords.", chatCmd );
+		return;
+	}
+	if ( argc == 1 ) {
+		Q_strncpyz( targetMap, sv_mapname->string, sizeof( targetMap ) );
+	} else {
+		char *matches[64];
+		int i, index = 0;
+
+		for ( i = 0 ; i < argc ; i++ ) {
+			Q_strncpyz( args[i], Cmd_Argv( i ), sizeof( args[i] ) );
+			Q_strlwr( args[i] );
+		}
+
+		Cmd_TokenizeString( sv_mapNames->string );
+
+		for ( i = 0 ; i < Cmd_Argc() ; i++ ) {
+			char *p = Cmd_Argv( i );
+			qboolean match;
+			int j;
+
+			if ( argc == 2 && !strcmp( args[1], p ) ) {
+				matches[0] = p;
+				index = 1;
+				break;
+			}
+
+			match = qtrue;
+			for ( j = 1 ; j < argc ; j++ ) {
+				if ( strstr( p, args[j] ) == NULL ) {
+					match = qfalse;
+					break;
+				}
+			}
+			if ( match ) {
+				if ( index >= sizeof( matches ) / sizeof( matches[0] ) ) {
+					SV_SendInfo( cl, "^7Too many matches.", chatCmd );
+					return;
+				}
+				matches[index] = p;
+				index++;
+			}
+		}
+		if ( index == 1 ) {
+			Q_strncpyz( targetMap, matches[0], sizeof( targetMap ) );
+		} else if ( index < 1 ) {
+			SV_SendInfo( cl, "Map not found.", chatCmd );
+			return;
+		} else {
+			char outString[256];
+
+			outString[0] = '\0';
+			for ( i = 0 ; i < index ; i++ ) {
+				if ( i > 0 ) {
+					Q_strcat( outString, sizeof( outString ), " " );
+				}
+				if ( strlen( outString ) + strlen( matches[i] ) >= sizeof( outString ) ) {
+					SV_SendInfo( cl, "Too many matches.", chatCmd );
+					return;
+				}
+				Q_strcat( outString, sizeof( outString ), matches[i] );
+			}
+			SV_SendInfo( cl, outString, chatCmd );
+			return;
+		}
+	}
+	
+	len = FS_PakInfoForFile( va( "maps/%s.bsp", targetMap ), pakBasename );
+	if ( len > 0 ) {
+		char *sizeInText;
+
+		if ( len >= 1024*1024 ) {
+			sizeInText = va ( "%.2fMB", ( double )len / 1024 / 1024 );
+		} else {
+			sizeInText = va ( "%dKB", len / 1024 );
+		}
+		SV_SendInfo( cl, va ( "^zpk3^7: %s.pk3  %s", pakBasename, sizeInText ), chatCmd );
+	}
+
+	if ( FS_FOpenFileRead( va( "scripts/%s.arena", targetMap ), &fp, qfalse ) > 0 ) {
+		if ( FS_Read( buf, sizeof( buf ), fp ) ) {
+			int i;
+			char *map = "", *longname = "", *description = "";
+
+			Cmd_TokenizeString( buf );
+			for ( i = 1; i < Cmd_Argc(); i++ ) {
+				char *argv = Cmd_Argv( i );
+
+				if ( !Q_stricmp( argv, "map" ) ) {
+					if ( ++i >= Cmd_Argc() )
+						break;
+					map = Cmd_Argv( i );
+				} else if ( !Q_stricmp( argv, "longname" ) ) {
+					if ( ++i >= Cmd_Argc() )
+						break;
+					longname = Cmd_Argv( i );
+				} else if ( !Q_stricmp( argv, "briefing" ) ) {
+					if ( ++i >= Cmd_Argc() )
+						break;
+					description = Cmd_Argv( i );
+				}
+			}
+			if ( Q_stricmp( map, targetMap ) ) {
+				map = targetMap;
+			}
+			for ( i = 0 ; description[i] ; i++ ) {
+				if ( description[i] == '^' ) {
+					if ( !description[++i] ) {
+						break;
+					} else {
+						continue;
+					}
+				}
+				if ( description[i] == '*' ) {
+					description[i] = ' ';
+				}
+			}
+			SV_SendInfo( cl, va( "^3map^7: %s  ^3longname^7: %s\n%s", map, longname, description ), chatCmd );
+			FS_FCloseFile( fp );
+		}
+	} else {
+		SV_SendInfo( cl, va ( "map^7: %s", targetMap ), chatCmd );
+	}
+}
+
+void SV_CV_f( client_t *cl ) {
+	Cmd_TokenizeString( va( "callvote %s", Cmd_Args() ) );
+	if ( sv.state == SS_GAME ) {
+		VM_Call( gvm, GAME_CLIENT_COMMAND, cl - svs.clients );
+	}
+}
+
+void SV_UserFeedback_f(client_t* cl) {
+	char *cmd = Cmd_Argv(0);
+	char *feedback = Cmd_ArgsFrom(1);
+	qboolean chatCmd;
+	fileHandle_t fh;
+	time_t t;
+	struct tm *lt;
+	char dateTime[64];
+	char userinfo[MAX_INFO_STRING];
+
+	if ( cl->nextServercommandTime > svs.time ) {
+		return;
+	}
+	cl->nextServercommandTime = svs.time + 200;
+
+	if ( cmd[0] == '!' || cmd[0] == '/' || cmd[0] == '\\') {
+		chatCmd = qtrue;
+	} else {
+		chatCmd = qfalse;
+	}
+
+	if ( !sv_allowUserFeedbacks->integer ) {
+		SV_SendInfo( cl, "Sorry, ^3feedback ^7is disabled", chatCmd );
+		return;
+	}
+	if ( cl->nextFeedbackTime > svs.time ) {
+		int sec = ( int )ceil( ( double )( cl->nextFeedbackTime - svs.time ) / 1000 );
+		SV_SendServerCommand( cl, "print \"^3feedback: ^7wait %d %s to use again\n\"", sec, sec == 1 ? "second" : "seconds" );
+		return;
+	}
+	cl->nextFeedbackTime = svs.time + 1000;
+
+	if (!feedback[0]) {
+		if (chatCmd) {
+			SV_SendServerCommand(cl, "chat \"usage: !feedback [messages to admin]\"");
+		}
+		else {
+			SV_SendServerCommand(cl, "print \"usage: \\feedback [messages to admin]\n\"");
+		}
+		return;
+	}
+
+	if (time(&t)) {
+		lt = localtime(&t);
+		strftime(dateTime, sizeof(dateTime), "%Y-%m-%d %H:%M:%S", lt);
+	}
+	else {
+		Q_strncpyz(dateTime, "Time stamp unavailable:", sizeof(dateTime));
+	}
+	SV_GetUserinfo(cl - svs.clients, userinfo, sizeof(userinfo));
+	if (FS_AppendTextToFile("UserFeedbacks.txt", va("%s %s (%s %s): %s\n", dateTime,
+		cl->name, Info_ValueForKey(userinfo, "ip"), Info_ValueForKey(userinfo, "cl_guid"), Cmd_ArgsFrom(1)))) {
+		if (chatCmd) {
+			SV_SendServerCommand(cl, "chat \"^8Thank you for your feedback.\"");
+		}
+		else {
+			SV_SendServerCommand(cl, "print \"^2Thank you for your feedback.\n\"");
+		}
+	}
+	else {
+		if (chatCmd) {
+			SV_SendServerCommand(cl, "chat \"^3Oops, failed to write feedback to file...\"");
+		}
+		else {
+			SV_SendServerCommand(cl, "print \"^3Oops, failed to write feedback to file...\n\"");
+		}
+	}
 }
 
 // abort an attempted download
@@ -1187,7 +1760,7 @@ This routine would be a bit simpler with a goto but i abstained
 */
 static void SV_VerifyPaks_f( client_t *cl ) {
 	int nChkSum1, nChkSum2, nClientPaks, nServerPaks, i, j, nCurArg;
-	int nClientChkSum[1024];
+	//int nClientChkSum[1024];
 	int nServerChkSum[1024];
 	const char *pPaks, *pArg;
 	qboolean bGood = qtrue;
@@ -1205,7 +1778,7 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 			bGood = ( FS_FileIsInPAK( FS_ShiftStr( SYS_DLLNAME_UI, -SYS_DLLNAME_UI_SHIFT ), &nChkSum2 ) == 1 );
 		}
 
-		nClientPaks = Cmd_Argc();
+		cl->numPaks = nClientPaks = Cmd_Argc();
 
 		// start at arg 2 ( skip serverId cl_paks )
 		nCurArg = 1;
@@ -1254,7 +1827,7 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 			}
 			// store checksums since tokenization is not re-entrant
 			for ( i = 0; nCurArg < nClientPaks; i++ ) {
-				nClientChkSum[i] = atoi( Cmd_Argv( nCurArg++ ) );
+				cl->pakChecksums[i] = atoi( Cmd_Argv( nCurArg++ ) );
 			}
 
 			// store number to compare against (minus one cause the last is the number of checksums)
@@ -1267,7 +1840,7 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 					if ( i == j ) {
 						continue;
 					}
-					if ( nClientChkSum[i] == nClientChkSum[j] ) {
+					if ( cl->pakChecksums[i] == cl->pakChecksums[j] ) {
 						bGood = qfalse;
 						break;
 					}
@@ -1295,7 +1868,7 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 			// check if the client has provided any pure checksums of pk3 files not loaded by the server
 			for ( i = 0; i < nClientPaks; i++ ) {
 				for ( j = 0; j < nServerPaks; j++ ) {
-					if ( nClientChkSum[i] == nServerChkSum[j] ) {
+					if ( cl->pakChecksums[i] == nServerChkSum[j] ) {
 						break;
 					}
 				}
@@ -1311,10 +1884,10 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 			// check if the number of checksums was correct
 			nChkSum1 = sv.checksumFeed;
 			for ( i = 0; i < nClientPaks; i++ ) {
-				nChkSum1 ^= nClientChkSum[i];
+				nChkSum1 ^= cl->pakChecksums[i];
 			}
 			nChkSum1 ^= nClientPaks;
-			if ( nChkSum1 != nClientChkSum[nClientPaks] ) {
+			if ( nChkSum1 != cl->pakChecksums[nClientPaks] ) {
 				bGood = qfalse;
 				break;
 			}
@@ -1326,6 +1899,11 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 		cl->gotCP = qtrue;
 
 		if ( bGood ) {
+			cl->pureAuthentic = 1;
+		} else if ( sv_allowUnpureClients->integer ) {
+			char *message = va( "Unpure client detected: %s^7 has invalid .PK3 files referenced!", cl->name );
+			SV_SendServerCommand( NULL, "cpm \"%s\n\"", message );
+			Com_Printf( "%s\n", message );
 			cl->pureAuthentic = 1;
 		} else {
 			cl->pureAuthentic = 0;
@@ -1429,6 +2007,57 @@ void SV_UserinfoChanged( client_t *cl ) {
 		}
 	}
 
+#ifdef WIN32
+	// disable auto sleep as long as someone is on the server
+	SetThreadExecutionState( ES_SYSTEM_REQUIRED | ES_CONTINUOUS );
+#endif
+}
+
+
+void SV_NumberName( client_t *cl ) {
+	char *originalname;
+	char newname[MAX_NAME_LENGTH];
+	static char prefix[MAX_NAME_LENGTH / 2] = "";
+	static char prefix2[MAX_NAME_LENGTH / 2] = "";
+
+	if ( sv_numberedNamesDecoration->modified ) {
+		char *p;
+
+		Q_strncpyz( prefix, sv_numberedNamesDecoration->string, sizeof( prefix ) );
+		p = strrchr( prefix, ';' );
+		if ( p ) {
+			Q_strncpyz( prefix2, p + 1, sizeof( prefix2 ) );
+		} else {
+			prefix2[0] = '\0';
+		}
+		p = strchr( prefix, ';' );
+		if ( p ) {
+			*p = '\0';
+		}
+		sv_numberedNamesDecoration->modified = qfalse;
+	}
+
+	originalname = Info_ValueForKey( cl->userinfo, "name" );
+	Info_SetValueForKey( cl->userinfo, "originalname", originalname );
+
+	if ( sv_numberedNames->integer ) {
+		if ( sv_numberedNames->integer == 2 ) {
+			Com_sprintf( newname, sizeof( newname ), "%s%2d %s%s", prefix, cl - svs.clients, prefix2, originalname );
+		} else if ( sv_numberedNames->integer == 3 ) {
+			Com_sprintf( newname, sizeof( newname ), "%s%02d %s%s", prefix, cl - svs.clients, prefix2, originalname );
+		} else if ( sv_numberedNames->integer == 4 ) {
+			int clientNum = cl - svs.clients;
+
+			if ( clientNum < 10 ) {
+				Com_sprintf( newname, sizeof( newname ), "%s%d  %s%s", prefix, clientNum, prefix2, originalname );
+			} else {
+				Com_sprintf( newname, sizeof( newname ), "%s%d %s%s", prefix, clientNum, prefix2, originalname );
+			}
+		} else {
+			Com_sprintf( newname, sizeof( newname ), "%s%d %s%s", prefix, cl - svs.clients, prefix2, originalname );
+		}
+		Info_SetValueForKey( cl->userinfo, "name", newname );
+	}
 }
 
 
@@ -1438,7 +2067,15 @@ SV_UpdateUserinfo_f
 ==================
 */
 static void SV_UpdateUserinfo_f( client_t *cl ) {
+	char *cl_guid = Info_ValueForKey( cl->userinfo, "cl_guid" );
+
 	Q_strncpyz( cl->userinfo, Cmd_Argv( 1 ), sizeof( cl->userinfo ) );
+
+	if ( *cl_guid ) {
+		Info_SetValueForKey( cl->userinfo, "cl_guid", cl_guid );
+	}
+
+	SV_NumberName( cl );
 
 	SV_UserinfoChanged( cl );
 	// call prog code to allow overrides
@@ -1461,8 +2098,62 @@ static ucmd_t ucmds[] = {
 	{"stopdl",       SV_StopDownload_f,      qfalse },
 	{"donedl",       SV_DoneDownload_f,      qfalse },
 	{"wwwdl",        SV_WWWDownload_f,       qfalse },
+	{"listmaps",	SV_ListMaps_f,		qfalse},
+	{"maplist",		SV_MapList_f,		qfalse},
+	{"findmap",		SV_FindMap_f,		qfalse},
+	{"mapinfo",		SV_MapInfo_f,		qfalse},
+	{"minfo",		SV_MapInfo_f,		qfalse},
+	{"cv",			SV_CV_f,		    qfalse},
+	{"feedback",    SV_UserFeedback_f,  qtrue},
 	{NULL, NULL}
 };
+
+void SV_Save_f( client_t *cl ) {
+	char *P = Cvar_VariableString( "P" );
+	playerState_t *ps = SV_GameClientNum( cl - svs.clients );
+	int team = 0;
+
+	if ( ps->stats[STAT_HEALTH] <= 0 ) {
+		SV_SendServerCommand( cl, "cp \"Can't save while dead.\n\"" );
+		return;
+	}
+
+	if ( P[cl - svs.clients] == '1' ) {
+		team = 1;
+	} else if ( P[cl - svs.clients] == '2' ) {
+		team = 2;
+	}
+	if ( cl->savedPositions[team] ) {
+		Z_Free( cl->savedPositions[team] );
+	}
+	cl->savedPositions[team] = Z_Malloc( sizeof ( playerState_t ) );
+	*cl->savedPositions[team] = *ps;
+	SV_SendServerCommand( cl, "cp \"Saved\n\"" );
+	return;
+}
+
+void SV_Load_f( client_t *cl ) {
+	char *P = Cvar_VariableString( "P" );
+	playerState_t *ps = SV_GameClientNum( cl - svs.clients );
+	int team = 0;
+	int i;
+
+	if ( P[cl - svs.clients] == '1' ) {
+		team = 1;
+	} else if ( P[cl - svs.clients] == '2' ) {
+		team = 2;
+	}
+	if ( cl->savedPositions[team] && ps->stats[STAT_HEALTH] > 0 ) {
+		*ps = *cl->savedPositions[team];
+		for ( i = 0; i < 3; i++ ) {
+			ps->delta_angles[i] = ANGLE2SHORT( ps->viewangles[i] ) - cl->lastUsercmd.angles[i];
+		}
+		SV_SendServerCommand( cl, "cp \"Loaded\n\"" );
+	} /*else {
+		SV_SendServerCommand( cl, "cp \"Use save first\n\"" );
+	}*/
+	return;
+}
 
 /*
 ==================
@@ -1474,12 +2165,14 @@ Also called by bot code
 void SV_ExecuteClientCommand( client_t *cl, const char *s, qboolean clientOK, qboolean premaprestart ) {
 	ucmd_t  *u;
 	qboolean bProcessed = qfalse;
+	char *lowerArgv0;
 
 	Cmd_TokenizeString( s );
+	lowerArgv0 = Q_strlwr( va( "%s", Cmd_Argv( 0 ) ) );
 
 	// see if it is a server level command
 	for ( u = ucmds ; u->name ; u++ ) {
-		if ( !strcmp( Cmd_Argv( 0 ), u->name ) ) {
+		if ( !strcmp( lowerArgv0, u->name ) ) {
 			if ( premaprestart && !u->allowedpostmapchange ) {
 				continue;
 			}
@@ -1490,11 +2183,106 @@ void SV_ExecuteClientCommand( client_t *cl, const char *s, qboolean clientOK, qb
 		}
 	}
 
+	if ( sv_save->integer ) {
+		if ( !strcmp( lowerArgv0, "save" ) ) {
+			SV_Save_f( cl );
+			return;
+		} else if ( !strcmp( lowerArgv0, "load" ) ) {
+			SV_Load_f( cl );
+			return;
+		}
+	}
+
 	if ( clientOK ) {
+		if ( sv_processVoiceChats->integer ) {
+			if ( !strcmp( lowerArgv0, "vsay") ) {
+				char buf[MAX_INFO_STRING];
+
+				SV_GetConfigstring( CS_PLAYERS + ( cl - svs.clients ), buf, sizeof( buf ) );
+				if ( atoi( Info_ValueForKey( buf, "mu" ) ) ) {
+					return;
+				}
+				if ( cl->voiceChatTime < svs.time - 30000 ) {
+					cl->voiceChatTime = svs.time - 30000;
+				}
+				if ( cl->voiceChatTime + 30000 / sv_processVoiceChats->integer > svs.time ) {
+					SV_SendServerCommand( cl, "cpm \"^1Spam Protection^7: VoiceChat ignored\n\"" );
+					return;
+				}
+				SV_SendServerCommand( NULL, "vchat 0 %d 50 %s", cl - svs.clients, Cmd_Argv( 1 ) );
+				Com_Printf( "voice: %s %s\n", cl->name, Cmd_Argv( 1 ) );
+				cl->voiceChatTime += 30000 / sv_processVoiceChats->integer;
+				return;
+			}
+		}
+
 		// pass unknown strings to the game
 		if ( !u->name && sv.state == SS_GAME ) {
 			VM_Call( gvm, GAME_CLIENT_COMMAND, cl - svs.clients );
 		}
+
+		if ( *sv_chatConnectedServers->string ) {
+			if ( !strcmp( lowerArgv0, "say" ) || !strcmp( lowerArgv0, "enc_say" ) ) {
+				char buf[MAX_INFO_STRING];
+
+				SV_GetConfigstring( CS_PLAYERS + ( cl - svs.clients ), buf, sizeof( buf ) );
+				if ( !atoi( Info_ValueForKey( buf, "mu" ) ) ) {
+					SV_SendToChatConnectedServers( va( "rsay %s:^7%s^7: ^2%s", *sv_chatHostname->string ? sv_chatHostname->string : sv_hostname->string, cl->name, Cmd_Args() ) );
+				}
+			}
+		}
+		if ( sv_chatCommands->integer ) {
+			if ( !strcmp( lowerArgv0, "say" ) || !strcmp( lowerArgv0, "enc_say" ) ) {
+				char *cmd;
+				//char cmdString[BIG_INFO_STRING];
+				const char *checkConsole = "chat \"^zCheck console for more information.\"";
+
+				//Q_strncpyz( cmdString, Cmd_Cmd(), sizeof( cmdString ) );
+				Cmd_TokenizeString( Cmd_Args() );
+				cmd = Cmd_Argv( 0 );
+				if ( cmd[0] == '\\' || cmd[0] == '/' ) {
+					if ( !Q_stricmp( cmd + 1, "MINFO" ) ) {
+						SV_SendServerCommand( cl, checkConsole );
+						SV_MapInfo_f( cl );
+					} else if ( !Q_stricmp( cmd + 1, "LISTMAPS" ) ) {
+						SV_SendServerCommand( cl, checkConsole );
+						SV_ListMaps_f( cl );
+					} else if ( !Q_stricmp( cmd + 1, "FINDMAP" ) ) {
+						SV_SendServerCommand( cl, checkConsole );
+						SV_FindMap_f( cl );
+					} else if ( !Q_stricmp( cmd + 1, "FEEDBACK" ) ) {
+						SV_UserFeedback_f( cl );
+					} else if ( !Q_stricmp( cmd + 1, "SAVE" ) ) {
+						SV_Save_f( cl );
+					} else if ( !Q_stricmp( cmd + 1, "LOAD" ) ) {
+						SV_Load_f( cl );
+					} else if ( !Q_stricmp( cmd + 1, "CV" ) ) {
+						Cmd_TokenizeString( va( "callvote %s", Cmd_Args() ) );
+						if ( sv.state == SS_GAME ) {
+							VM_Call( gvm, GAME_CLIENT_COMMAND, cl - svs.clients );
+						}
+					}
+			} else if ( cmd[0] == '!' ) { 
+					cmd++;
+					if ( !Q_stricmp( cmd, "MINFO" ) ) {
+						char buf[MAX_INFO_STRING];
+
+						SV_GetConfigstring( CS_PLAYERS + ( cl - svs.clients ), buf, sizeof( buf ) );
+						if ( !atoi( Info_ValueForKey( buf, "mu" ) ) ) {
+							SV_MapInfo_f( cl );
+						}
+					} else if ( !Q_stricmp( cmd, "FEEDBACK" ) ) {
+						SV_UserFeedback_f( cl );
+					} else if ( !Q_stricmp( cmd, "CV" ) ) {
+						Cmd_TokenizeString( va( "callvote %s", Cmd_Args() ) );
+						if ( sv.state == SS_GAME ) {
+							VM_Call( gvm, GAME_CLIENT_COMMAND, cl - svs.clients );
+						}
+					}
+				}
+			}
+		}
+
 	} else if ( !bProcessed )     {
 		Com_DPrintf( "client text ignored for %s: %s\n", cl->name, Cmd_Argv( 0 ) );
 	}
@@ -1519,7 +2307,34 @@ static qboolean SV_ClientCommand( client_t *cl, msg_t *msg, qboolean premapresta
 		return qtrue;
 	}
 
-	Com_DPrintf( "clientCommand: %s : %i : %s\n", cl->name, seq, s );
+	if ( sv_floodThreshold->integer > 0 ) {
+		if ( svs.time - cl->floodTime > 9500 ) {
+			cl->floodTime = svs.time - 9500;
+		}
+		if ( cl->floodTime >= svs.time ) {
+			goto last_client_command;
+		}
+
+		if ( !Q_strncmp( "team", s, 4 ) || !Q_strncmp( "setspawnpt", s, 10 ) || !Q_strncmp( "score", s, 5 ) || !Q_stricmp( "forcetapout", s ) 
+			|| !Q_strncmp( "imvotetally", s, 11 ) || !Q_strncmp( "obj", s, 3 ) )
+			cl->floodTime += 2500 / sv_floodThreshold->integer;
+		else
+			cl->floodTime += 10000 / sv_floodThreshold->integer;
+	}
+
+	if ( sv_showClientCmds->integer ) {
+		Cmd_TokenizeString( s );
+		if ( Q_stricmp( Cmd_Argv( 0 ), "nextdl" ) == 0 && atoi( Cmd_Argv( 1 ) ) % 10 != 0 ) {
+		} else {
+			Com_Printf( "clientCommand: %s : %i : %s\n", cl->name, seq, s );
+		}
+	} else {
+		Com_DPrintf( "clientCommand: %s : %i : %s\n", cl->name, seq, s );
+	}
+
+	if ( !Q_stricmpn( "TEAM", s, 4 ) || Cvar_VariableIntegerValue( "gamestate" ) == GS_INTERMISSION ) {
+		cl->lastActivityTime = svs.time;
+	}
 
 	// drop the connection if we have somehow lost commands
 	if ( seq > cl->lastClientCommand + 1 ) {
@@ -1528,39 +2343,42 @@ static qboolean SV_ClientCommand( client_t *cl, msg_t *msg, qboolean premapresta
 		return qfalse;
 	}
 
+	if ( sv_floodProtect->integer ) {
 
-	// Gordon: AHA! Need to steal this for some other stuff BOOKMARK
-	// NERVE - SMF - some server game-only commands we cannot have flood protect
-	if ( !Q_strncmp( "team", s, 4 ) || !Q_strncmp( "setspawnpt", s, 10 ) || !Q_strncmp( "score", s, 5 ) || !Q_stricmp( "forcetapout", s ) ) {
-//		Com_DPrintf( "Skipping flood protection for: %s\n", s );
-		floodprotect = qfalse;
-	}
+		// Gordon: AHA! Need to steal this for some other stuff BOOKMARK
+		// NERVE - SMF - some server game-only commands we cannot have flood protect
+		if ( !Q_strncmp( "team", s, 4 ) || !Q_strncmp( "setspawnpt", s, 10 ) || !Q_strncmp( "score", s, 5 ) || !Q_stricmp( "forcetapout", s ) ) {
+	//		Com_DPrintf( "Skipping flood protection for: %s\n", s );
+			floodprotect = qfalse;
+		}
 
-	// malicious users may try using too many string commands
-	// to lag other players.  If we decide that we want to stall
-	// the command, we will stop processing the rest of the packet,
-	// including the usercmd.  This causes flooders to lag themselves
-	// but not other people
-	// We don't do this when the client hasn't been active yet since its
-	// normal to spam a lot of commands when downloading
-	if ( !com_cl_running->integer &&
-		 cl->state >= CS_ACTIVE &&      // (SA) this was commented out in Wolf.  Did we do that?
-		 sv_floodProtect->integer &&
-		 svs.time < cl->nextReliableTime &&
-		 floodprotect ) {
-		// ignore any other text messages from this client but let them keep playing
-		// TTimo - moved the ignored verbose to the actual processing in SV_ExecuteClientCommand, only printing if the core doesn't intercept
-		clientOk = qfalse;
-	}
+		// malicious users may try using too many string commands
+		// to lag other players.  If we decide that we want to stall
+		// the command, we will stop processing the rest of the packet,
+		// including the usercmd.  This causes flooders to lag themselves
+		// but not other people
+		// We don't do this when the client hasn't been active yet since its
+		// normal to spam a lot of commands when downloading
+		if ( !com_cl_running->integer &&
+			 cl->state >= CS_ACTIVE &&      // (SA) this was commented out in Wolf.  Did we do that?
+	//		 sv_floodProtect->integer &&
+			 svs.time < cl->nextReliableTime &&
+			 floodprotect ) {
+			// ignore any other text messages from this client but let them keep playing
+			// TTimo - moved the ignored verbose to the actual processing in SV_ExecuteClientCommand, only printing if the core doesn't intercept
+			clientOk = qfalse;
+		}
 
-	// don't allow another command for 800 msec
-	if ( floodprotect &&
-		 svs.time >= cl->nextReliableTime ) {
-		cl->nextReliableTime = svs.time + 800;
+		// don't allow another command for 800 msec
+		if ( floodprotect &&
+			 svs.time >= cl->nextReliableTime ) {
+			cl->nextReliableTime = svs.time + 800;
+		}
 	}
 
 	SV_ExecuteClientCommand( cl, s, clientOk, premaprestart );
 
+last_client_command:
 	cl->lastClientCommand = seq;
 	Com_sprintf( cl->lastClientCommandString, sizeof( cl->lastClientCommandString ), "%s", s );
 
@@ -1579,13 +2397,59 @@ Also called by bot code
 ==================
 */
 void SV_ClientThink( client_t *cl, usercmd_t *cmd ) {
+	if ( cmd->buttons != cl->lastUsercmd.buttons || cmd->wbuttons != cl->lastUsercmd.wbuttons 
+		|| cmd->forwardmove != cl->lastUsercmd.forwardmove || cmd->rightmove != cl->lastUsercmd.rightmove || cmd->upmove != cl->lastUsercmd.upmove ) {
+		cl->lastActivityTime = cmd->serverTime;
+	}
+
 	cl->lastUsercmd = *cmd;
 
 	if ( cl->state != CS_ACTIVE ) {
 		return;     // may have been kicked during the last usercmd
 	}
 
+	if ( sv_disabledWeapons1->integer ) {
+		playerState_t *ps = SV_GameClientNum( cl - svs.clients );
+		int weapons[2];
+
+		weapons[0] = sv_disabledWeapons1->integer;
+		weapons[1] = sv_disabledWeapons2->integer;
+		if ( COM_BitCheck( weapons, cmd->weapon ) ) {
+			COM_BitClear( ps->weapons, cmd->weapon );
+			ps->weaponstate = 1;
+			//cmd->buttons &= ~BUTTON_ATTACK;
+			//cmd->wbuttons &= ~WBUTTON_ATTACK2;
+		}
+	}
+
 	VM_Call( gvm, GAME_CLIENT_THINK, cl - svs.clients );
+	if ( cmd->buttons ) {
+		int i;
+
+		for ( i = 0 ; i < 8 ; i++ ) {
+			if ( cmd->buttons & 1 << i ) {
+				cl->lastUsercmdTimes.buttons[i] = cmd->serverTime;
+			}
+		}
+	}
+	if ( cmd->wbuttons ) {
+		int i;
+
+		for ( i = 0 ; i < 8 ; i++ ) {
+			if ( cmd->wbuttons & 1 << i ) {
+				cl->lastUsercmdTimes.wbuttons[i] = cmd->serverTime;
+			}
+		}
+	}
+	if ( cmd->forwardmove ) {
+		cl->lastUsercmdTimes.forwardmove = cmd->serverTime;
+	}
+	if ( cmd->rightmove ) {
+		cl->lastUsercmdTimes.rightmove = cmd->serverTime;
+	}
+	if ( cmd->upmove ) {
+		cl->lastUsercmdTimes.upmove = cmd->serverTime;
+	}
 }
 
 /*

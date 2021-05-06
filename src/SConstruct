@@ -256,7 +256,7 @@ elif ( BUILD == 'release' ):
 		# -fschedule-insns2: implicit at -O3
 		# -funroll-loops ?
 		# -mfpmath=sse -msse ?
-		OPTCPPFLAGS = [ '-O3', '-march=i686', '-Winline', '-ffast-math', '-fomit-frame-pointer', '-finline-functions', '-fschedule-insns2' ]
+		OPTCPPFLAGS = [ '-O3', '-march=i686', '-Winline', '-fomit-frame-pointer', '-finline-functions', '-fschedule-insns2' ]
 	elif ( OS == 'Darwin' ):
 		OPTCPPFLAGS = []
 else:
@@ -329,7 +329,7 @@ if ( TARGET_CORE == '1' ):
 	if ( DEDICATED == '0' or DEDICATED == '2' ):
 		local_dedicated = 0
 		Export( 'GLOBALS ' + GLOBALS )
-		BuildDir( g_build + '/core', '.', duplicate = 0 )
+		VariantDir( g_build + '/core', '.', duplicate = 0 )
 		et = SConscript( g_build + '/core/SConscript.core' )
 		if ( g_os == 'win32' ):
 			toplevel_targets.append( InstallAs( '#et.exe', et ) )
@@ -339,7 +339,7 @@ if ( TARGET_CORE == '1' ):
 	if ( DEDICATED == '1' or DEDICATED == '2' ):
 		local_dedicated = 1
 		Export( 'GLOBALS ' + GLOBALS )
-		BuildDir( g_build + '/dedicated', '.', duplicate = 0 )
+		VariantDir( g_build + '/dedicated', '.', duplicate = 0 )
 		etded = SConscript( g_build + '/dedicated/SConscript.core' )
 		if ( g_os == 'win32' ):
 			toplevel_targets.append( InstallAs( '#etded.exe', etded ) )
@@ -348,25 +348,25 @@ if ( TARGET_CORE == '1' ):
 
 if ( TARGET_BSPC == '1' ):
 	Export( 'GLOBALS ' + GLOBALS )
-	BuildDir( g_build + '/bspc', '.', duplicate = 0 )
+	VariantDir( g_build + '/bspc', '.', duplicate = 0 )
 	bspc = SConscript( g_build + '/bspc/SConscript.bspc' )
 	toplevel_targets.append( InstallAs( '#bspc.' + cpu, bspc ) )
 
 if ( TARGET_GAME == '1' ):
 	Export( 'GLOBALS ' + GLOBALS )
-	BuildDir( g_build + '/game', '.', duplicate = 0 )
+	VariantDir( g_build + '/game', '.', duplicate = 0 )
 	game = SConscript( g_build + '/game/SConscript.game' )
 	toplevel_targets.append( InstallAs( '#qagame.mp.%s.so' % dll_cpu, game ) )
 
 if ( TARGET_CGAME == '1' ):
 	Export( 'GLOBALS ' + GLOBALS )
-	BuildDir( g_build + '/cgame', '.', duplicate = 0 )
+	VariantDir( g_build + '/cgame', '.', duplicate = 0 )
 	cgame = SConscript( g_build + '/cgame/SConscript.cgame' )
 	toplevel_targets.append( InstallAs( '#cgame.mp.%s.so' % dll_cpu, cgame ) )
 
 if ( TARGET_UI == '1' ):
 	Export( 'GLOBALS ' + GLOBALS )
-	BuildDir( g_build + '/ui', '.', duplicate = 0 )
+	VariantDir( g_build + '/ui', '.', duplicate = 0 )
 	ui = SConscript( g_build + '/ui/SConscript.ui' )
 	toplevel_targets.append( InstallAs( '#ui.mp.%s.so' % dll_cpu, ui ) )
 

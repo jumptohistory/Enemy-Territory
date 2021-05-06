@@ -535,7 +535,7 @@ qboolean Com_AddStartupCommands( void ) {
 
 void Info_Print( const char *s ) {
 	char key[512];
-	char value[512];
+	char value[48];
 	char    *o;
 	int l;
 
@@ -553,6 +553,7 @@ void Info_Print( const char *s ) {
 			memset( o, ' ', 20 - l );
 			key[20] = 0;
 		} else {
+			*o++ = ' ';
 			*o = 0;
 		}
 		Com_Printf( "%s", key );
@@ -564,8 +565,13 @@ void Info_Print( const char *s ) {
 
 		o = value;
 		s++;
-		while ( *s && *s != '\\' )
+		while ( *s && *s != '\\' ) {
+			if ( o - value >= sizeof( value ) - 1 ) {
+				for ( o = value; *s && *s != '\\'; s++ );
+				break;
+			}
 			*o++ = *s++;
+		}
 		*o = 0;
 
 		if ( *s ) {

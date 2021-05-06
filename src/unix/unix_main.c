@@ -172,14 +172,21 @@ void tty_Back() {
 // clear the display of the line currently edited
 // bring cursor back to beginning of line
 void tty_Hide() {
+    int len;
 	int i;
 	assert( ttycon_on );
 	if ( ttycon_hide ) {
 		ttycon_hide++;
 		return;
 	}
-	if ( tty_con.cursor > 0 ) {
-		for ( i = 0; i < tty_con.cursor; i++ )
+    len = strlen( tty_con.buffer );
+	if ( len > 0 ) {
+        for ( i = tty_con.cursor; i < len; i++ ) 
+        {
+            static const char KEY_RIGHT_ARROW[] = { 27, 91, 67 };
+            write( 1, KEY_RIGHT_ARROW, sizeof( KEY_RIGHT_ARROW ) );
+        }
+		for ( i = 0; i < len; i++ )
 		{
 			tty_Back();
 		}
@@ -195,11 +202,30 @@ void tty_Show() {
 	assert( ttycon_hide > 0 );
 	ttycon_hide--;
 	if ( ttycon_hide == 0 ) {
-		if ( tty_con.cursor ) {
+		if ( strlen( tty_con.buffer ) ) {
+            char key;
 			for ( i = 0; i < tty_con.cursor; i++ )
 			{
 				write( 1, tty_con.buffer + i, 1 );
 			}
+
+            // save the cursor position
+            key = 27;
+            write( 1, &key, 1 );
+            key = 91;
+            write( 1, &key, 1 );
+            key = 's';
+            write( 1, &key, 1 );
+
+            write( 1, tty_con.buffer + tty_con.cursor, strlen( tty_con.buffer + tty_con.cursor ));
+
+            // restore the cursor position
+            key = 27;
+            write( 1, &key, 1 );
+            key = 91;
+            write( 1, &key, 1 );
+            key = 'u';
+            write( 1, &key, 1 );
 		}
 	}
 }
@@ -475,12 +501,87 @@ char *Sys_ConsoleInput( void ) {
 			// NOTE: testing a lot of values .. seems it's the only way to get it to work everywhere
 			if ( ( key == tty_erase ) || ( key == 127 ) || ( key == 8 ) ) {
 				if ( tty_con.cursor > 0 ) {
-					tty_con.cursor--;
-					tty_con.buffer[tty_con.cursor] = '\0';
-					tty_Back();
+                    if ( tty_con.buffer[tty_con.cursor] != '\0' ) {
+                        int pos;
+                        tty_con.cursor--;
+                        for ( pos = tty_con.cursor ; tty_con.buffer[pos] ; pos++ ) {
+                            tty_con.buffer[pos] = tty_con.buffer[pos + 1];
+                        }
+                        tty_Back();
+
+                        // save the cursor position
+                        key = 27;
+                        write( 1, &key, 1 );
+                        key = 91;
+                        write( 1, &key, 1 );
+                        key = 's';
+                        write( 1, &key, 1 );
+
+                        // erase to end of line
+                        key = 27;
+                        write( 1, &key, 1 );
+                        key = 91;
+                        write( 1, &key, 1 );
+                        key = 'K';
+                        write( 1, &key, 1 );
+                        
+                        for ( pos = tty_con.cursor ; tty_con.buffer[pos] ; pos++ ) {
+                            write( 1, &tty_con.buffer[pos], 1 );
+                        }
+
+                        // restore the cursor position
+                        key = 27;
+                        write( 1, &key, 1 );
+                        key = 91;
+                        write( 1, &key, 1 );
+                        key = 'u';
+                        write( 1, &key, 1 );
+                    } else {                        
+                        tty_con.cursor--;
+                        tty_con.buffer[tty_con.cursor] = '\0';
+                        tty_Back();
+                    }
 				}
 				return NULL;
 			}
+            // Control + A
+            if ( key == 1 ) {
+                char buf[32];
+
+                Com_sprintf( buf, sizeof( buf ), "%d", tty_con.cursor );
+
+                // Move the cursor to start of the line
+                key = 27;
+                write( 1, &key, 1 );
+                key = 91;
+                write( 1, &key, 1 );
+                write( 1, buf, strlen(buf));
+                key = 'D';
+                write( 1, &key, 1 );
+
+                tty_con.cursor = 0;
+                tty_FlushIn();
+                return NULL;
+            }
+            // Control + E
+            if ( key == 5 ) {
+                char buf[32];
+
+                Com_sprintf( buf, sizeof( buf ), "%d", strlen( tty_con.buffer ) - tty_con.cursor );
+
+                // Move the cursor to end of the line
+                key = 27;
+                write( 1, &key, 1 );
+                key = 91;
+                write( 1, &key, 1 );
+                write( 1, buf, strlen( buf ));
+                key = 'C';
+                write( 1, &key, 1 );
+
+                tty_con.cursor = strlen( tty_con.buffer );
+                tty_FlushIn();
+                return NULL;
+            }
 			// check if this is a control char
 			if ( ( key ) && ( key ) < ' ' ) {
 				if ( key == '\n' ) {
@@ -543,9 +644,75 @@ char *Sys_ConsoleInput( void ) {
 								return NULL;
 								break;
 							case 'C':
+                                if ( tty_con.cursor < strlen( tty_con.buffer ) ) {
+                                    tty_con.cursor++;
+                                    key = 27;
+                                    write( 1, &key, 1 );
+                                    key = 91;
+                                    write( 1, &key, 1 );
+                                    key = 67;
+                                    write( 1, &key, 1 );
+                                }
+                                tty_FlushIn();
 								return NULL;
+                                break;
 							case 'D':
+                                if ( tty_con.cursor > 0 ) {
+                                    tty_con.cursor--;
+                                    key = 27;
+                                    write( 1, &key, 1 );
+                                    key = 91;
+                                    write( 1, &key, 1 );
+                                    key = 68;
+                                    write( 1, &key, 1 );
+                                }
+                                tty_FlushIn();
 								return NULL;
+                                break;
+                            case '3':
+                                avail = read( 0, &key, 1 );
+                                if ( avail != -1 ) {
+                                    // delete key
+                                    if ( key == 126 ) {
+                                        if ( tty_con.buffer[tty_con.cursor] != '\0' ) {
+                                            int pos;
+                                            for ( pos = tty_con.cursor ; tty_con.buffer[pos] ; pos++ ) {
+                                                tty_con.buffer[pos] = tty_con.buffer[pos + 1];
+                                            }
+
+                                            // save the cursor position
+                                            key = 27;
+                                            write( 1, &key, 1 );
+                                            key = 91;
+                                            write( 1, &key, 1 );
+                                            key = 's';
+                                            write( 1, &key, 1 );
+
+                                            // erase to end of line
+                                            key = 27;
+                                            write( 1, &key, 1 );
+                                            key = 91;
+                                            write( 1, &key, 1 );
+                                            key = 'K';
+                                            write( 1, &key, 1 );
+                                            
+                                            for ( pos = tty_con.cursor ; tty_con.buffer[pos] ; pos++ ) {
+                                                write( 1, &tty_con.buffer[pos], 1 );
+                                            }
+
+                                            // restore the cursor position
+                                            key = 27;
+                                            write( 1, &key, 1 );
+                                            key = 91;
+                                            write( 1, &key, 1 );
+                                            key = 'u';
+                                            write( 1, &key, 1 );
+                                        }
+                                    }
+                                }
+                                tty_FlushIn();
+                                return NULL;
+                                break;
 							}
 						}
 					}
@@ -554,11 +721,48 @@ char *Sys_ConsoleInput( void ) {
 				tty_FlushIn();
 				return NULL;
 			}
-			// push regular character
-			tty_con.buffer[tty_con.cursor] = key;
-			tty_con.cursor++;
-			// print the current line (this is differential)
-			write( 1, &key, 1 );
+            if ( tty_con.buffer[tty_con.cursor] != '\0' ) {
+                int pos;
+                for ( pos = strlen( tty_con.buffer ) ; pos >= tty_con.cursor ; pos-- ) {
+                    tty_con.buffer[pos + 1] = tty_con.buffer[pos];
+                }
+                tty_con.buffer[tty_con.cursor] = key;
+
+                // save the cursor position
+                key = 27;
+                write( 1, &key, 1 );
+                key = 91;
+                write( 1, &key, 1 );
+                key = 's';
+                write( 1, &key, 1 );
+
+                for ( pos = tty_con.cursor ; tty_con.buffer[pos] ; pos++ ) {
+                    write( 1, &tty_con.buffer[pos], 1 );
+                }
+                tty_con.cursor++;
+
+                // restore the cursor position
+                key = 27;
+                write( 1, &key, 1 );
+                key = 91;
+                write( 1, &key, 1 );
+                key = 'u';
+                write( 1, &key, 1 );
+
+                // move the cursor one character right
+                key = 27;
+                write( 1, &key, 1 );
+                key = 91;
+                write( 1, &key, 1 );
+                key = 67;
+                write( 1, &key, 1 );
+            } else {
+                // push regular character
+                tty_con.buffer[tty_con.cursor] = key;
+                tty_con.cursor++;
+                // print the current line (this is differential)
+                write( 1, &key, 1 );
+            }
 		}
 		return NULL;
 	} else

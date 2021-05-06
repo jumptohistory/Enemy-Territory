@@ -46,14 +46,14 @@ If you have questions concerning this license or the applicable additional terms
 Sys_Milliseconds
 ================
 */
-int sys_timeBase;
+unsigned long sys_timeBase = 0;
 int Sys_Milliseconds( void ) {
 	int sys_curtime;
-	static qboolean initialized = qfalse;
+	//static qboolean initialized = qfalse;
 
-	if ( !initialized ) {
+	if ( !sys_timeBase ) {
 		sys_timeBase = timeGetTime();
-		initialized = qtrue;
+		//initialized = qtrue;
 	}
 	sys_curtime = timeGetTime() - sys_timeBase;
 

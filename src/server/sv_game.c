@@ -1008,6 +1008,9 @@ int SV_GameSystemCalls( int *args ) {
 	case G_MESSAGESTATUS:
 		return SV_BinaryMessageStatus( args[1] );
 
+	case G_FS_PAK_INFO_FOR_FILE:
+		return FS_PakInfoForFile( VMA( 1 ), VMA( 2 ) );
+
 	default:
 		Com_Error( ERR_DROP, "Bad game system trap: %i", args[0] );
 	}
@@ -1052,6 +1055,24 @@ static void SV_InitGameVM( qboolean restart ) {
 	// use the current msec count for a random seed
 	// init for this gamestate
 	VM_Call( gvm, GAME_INIT, svs.time, Com_Milliseconds(), restart );
+
+	Cvar_Set( "anti_ddos", "0" );
+	for ( i = 0 ; i < sv_maxclients->integer ; i++ ) {
+		if ( svs.clients[i].state >= CS_CONNECTED ) {
+			int j;
+			for ( j = 0 ; j < 3 ; j++ ) {
+				if ( svs.clients[i].savedPositions[j] ) {
+					Z_Free( svs.clients[i].savedPositions[j] );
+					svs.clients[i].savedPositions[j] = NULL;
+				}
+			}
+		}
+	}
+
+	if ( sv_showMapInfo->integer && !restart ) {
+		Cmd_TokenizeString( va( "! %s", sv_mapname->string ) );
+		SV_MapInfo_f( NULL );
+	}
 }
 
 

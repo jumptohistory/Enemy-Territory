@@ -156,7 +156,7 @@ NET
 // among several frames
 //#define	MAX_RELIABLE_COMMANDS	64			// max string commands buffered for restransmit
 //#define	MAX_RELIABLE_COMMANDS	128			// max string commands buffered for restransmit
-#define MAX_RELIABLE_COMMANDS   256 // bigger!
+#define MAX_RELIABLE_COMMANDS   1024 // bigger!
 
 typedef enum {
 	NA_BOT,
@@ -634,6 +634,8 @@ int     FS_GetModList(  char *listbuf, int bufsize );
 fileHandle_t    FS_FOpenFileWrite( const char *qpath );
 // will properly create any needed paths and deal with seperater character issues
 
+qboolean FS_AppendTextToFile(const char *filename, const char *text);
+
 int     FS_filelength( fileHandle_t f );
 fileHandle_t FS_SV_FOpenFileWrite( const char *filename );
 int     FS_SV_FOpenFileRead( const char *filename, fileHandle_t *fp );
@@ -720,6 +722,8 @@ const char *FS_ReferencedPakPureChecksums( void );
 // Returns a space separated string containing the checksums of all loaded
 // AND referenced pk3 files. Servers with sv_pure set will get this string
 // back from clients for pure validation
+
+void FS_OptionalPaks( char *checksums, char *names );
 
 void FS_ClearPakReferences( int flags );
 // clears referenced booleans on loaded pk3s

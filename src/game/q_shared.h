@@ -35,7 +35,8 @@ If you have questions concerning this license or the applicable additional terms
 //#define PRE_RELEASE_DEMO
 
 #ifndef PRE_RELEASE_DEMO
-#define Q3_VERSION      "ET 2.60d"
+//#define Q3_VERSION      "ET 2.60d"
+#define Q3_VERSION		"ET 2.60_JH"
 #else
 #define Q3_VERSION      "ET 2.32"
 #endif // PRE_RELEASE_DEMO
@@ -307,7 +308,7 @@ typedef int clipHandle_t;
 // the game guarantees that no string from the network will ever
 // exceed MAX_STRING_CHARS
 #define MAX_STRING_CHARS    1024    // max length of a string passed to Cmd_TokenizeString
-#define MAX_STRING_TOKENS   256     // max tokens resulting from Cmd_TokenizeString
+#define MAX_STRING_TOKENS   1024     // max tokens resulting from Cmd_TokenizeString
 #define MAX_TOKEN_CHARS     1024    // max length of an individual token
 
 #define MAX_INFO_STRING     1024
@@ -581,6 +582,8 @@ extern vec4_t g_color_table[32];
 
 #define DEG2RAD( a ) ( ( ( a ) * M_PI ) / 180.0F )
 #define RAD2DEG( a ) ( ( ( a ) * 180.0f ) / M_PI )
+
+#define lenof( array ) ( sizeof( array ) / sizeof( array[0] ) )
 
 struct cplane_s;
 
